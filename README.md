@@ -32,6 +32,7 @@ into one new fact, `specialist_stack_band`, that the merchant node adds when `sp
 Honest result: with only the features a checkout can compute, the stack is on par with the current model
 (AUC about 0.77); the large gain (0.866) needs columns the dataset's processor engineered. The human-in-the-loop upgrades are merged too (soft declines get a second look; structured, audited human
 opinions; persisted labels). Details, the live wiring and the plan: [Fraud specialists](#fraud-specialists-experiment-branch-specialists-experiment).
+A plain-words before-and-after guide for the team: [OLD_VS_NEW.md](OLD_VS_NEW.md).
 
 ## Quick start
 
