@@ -44,18 +44,29 @@ off-vocabulary values are blocked, altered bands are an integrity failure, and c
 model request. Without a model endpoint the run stops at "no model endpoint" and the payment is voided; say that plainly.
 
 ## 6. Card-testing ring (45 s)  -> the network sees what no store can
-Click "Card-testing ring": the same card buys $24 at store-a, store-b, store-c within a minute. Each store alone sees one
+Click "Card-testing ring" (the model learns from the review in section 7, so keep that store held): the same card buys $24 at store-a, store-b, store-c within a minute. Each store alone sees one
 ordinary purchase. The coordinator's network memory, persisted in the Flower run series, sees the same letters-only card
 reference at one, two, then three merchants: low, medium, high. The third checkout is held for a person and the alert names
 every store that saw the card. If a middle store is held early, that is the live Jev vote below the 80% confidence gate.
 Say: "Stores share a pseudonym and a band, nothing else. Each store here is one merchant identity on this node; in production
 each would be its own SuperNode."
 
-## 7. The human, and the model learning at once (30 s)
-On the held ring payment: enter the reviewer credential once (this browser remembers it), then decline. The reply shows the payment's model band
-before and after: the node retrained from the federated weights plus its own rows plus this label, inside the request.
-The label is on disk; "Retrain" in Node records runs a federated round across registered nodes. A chargeback becomes a label
-too, and the dispute agent drafts the response for a person.
+## 7. The human, and the model learning at once (40 s)
+Before the demo: REVIEWER_TOKEN is set in .env, and you entered it once in this browser, so the panel shows only the buttons.
+1. On the held ring payment, read the "why it is held" lines aloud: they are the gate's own rules, not a model's opinion.
+2. Click Decline and void. Nothing was charged; the verification is voided at Stripe.
+3. Say: "That decision just taught the fraud model. Inside this same request the node recomputed its weights from the
+   federated weights, a sample of its own ordinary transactions, and every label its reviewers have given. The next
+   checkout is scored with the new weights. Nothing about the label left this node."
+4. Open Records: under "Federated model" the human-label count went up by one. That is the visible proof.
+5. If asked how it stays safe: weights are recomputed from the same base every time, so labels cannot compound; one label
+   counts as 10% of the ordinary sample; no weight moves more than 3.0 from the federated base; if learning fails, the
+   decision still goes through. Labels are on disk and reapplied after a restart.
+6. Optional, if time: "Run one federated round with this node's labels" in Records spreads the lesson across nodes
+   (a federated round, then this node's labels on top).
+Be precise: the nine-feature federated model learns at once; the four specialists do not learn from labels yet. The band
+before and after is in the review reply, not on screen, so do not claim the page shows it. A chargeback on an approved
+payment becomes a fraud label the same way, and the dispute agent drafts the response for a person.
 
 ## 8. Proof and numbers (20 s)
 - Second tab: `flwr list supergrid` / flower.ai: our SuperNode registered on SuperGrid, federation @ac007/cardguard, real
