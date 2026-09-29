@@ -25,6 +25,11 @@ model is trained across merchants with Flower (FedAvg) so that only weights ever
 - Real data: IEEE-CIS in 5 verticals, federated training on Flower, 140 offline tests, two code reviews applied
   (dead code, security), ruff/vulture/bandit/pip-audit clean.
 
+**Experiment on branch `specialists-experiment` (offline, not wired into the demo)**: seven fraud specialists, each
+seeing only one family of signals, stacked into one score. On real IEEE-CIS data the stack reaches AUC 0.866
+against 0.773 for the current 9-feature model, and 0.839 when only low/medium/high bands are passed. Results,
+caveats and how to reproduce: [Fraud specialists experiment](#fraud-specialists-experiment-branch-specialists-experiment).
+
 **Left, in order**
 1. Commit everything (git shows the package as untracked) and push.
 2. `flwr login supergrid`, then run the same FAB on SuperGrid. The merchant role needs a SuperNode we control
@@ -144,6 +149,7 @@ accuracy tables and the differential-privacy budget. Script in "Demo script" bel
 | cardguard/training/retrain.py, join.py | Self-improving loop: human reviews and chargebacks become labels, one federated round spreads the lesson; one command joins a node |
 | cardguard/training/privacy.py | Differential privacy on the federated round (Flower server-side clipping + RDP accountant) with the spent budget |
 | cardguard/agentapp/launch.py | Starts one decision as a Flower run via the SuperLink Control API and reads the verdict back |
+| cardguard/specialists/ (branch `specialists-experiment`) | Experiment: seven signal-family specialists + stacker. `data.py` raw columns and identity parser, `features.py` the families, `model.py` logistic / LightGBM, `experiment.py` the runner and report |
 | run_demo.py | Starts the issuer (:4243) and the merchant (:4242) together; `--federation local-agent` decides over Flower |
 | tests/ | Offline tests. Jev, Endeavor and the LLM are faked; the issuer runs in-process; real-data tests skip without the CSV |
 
@@ -304,6 +310,130 @@ each type caught at p >= 0.5:
 | Travel merchant alone | 50% | 94% | 30% | 4.3% |
 | Digital-goods merchant alone | 16% | 9% | 99% | 1.3% |
 | **Federated (Flower, FedAvg)** | **88%** | **83%** | **98%** | 3.2% |
+
+## Fraud specialists experiment (branch `specialists-experiment`)
+
+**Status: offline experiment on real data. Nothing here is wired into the demo, the wire schema or the
+coordinator, and the live pipeline (`fl.FEATURES`, `fl_weights.json`, `merchant.py`, `BAND_CUTS`) is unchanged.**
+
+### The idea
+Today's federation is *horizontal*: every merchant has the same 9 features on different transactions, and
+FedAvg averages their weights. This experiment asks a different question. Instead of one agent per merchant,
+make **each agent a fraud specialist that only sees one family of signals for the same transactions**, then let
+a global agent combine the specialists' opinions into one fraud decision.
+
+This is vertical (feature-partitioned) federation plus stacking, **not FedAvg**: the specialists hold different
+columns, so their weights cannot be averaged. What would cross a node boundary is one banded score per
+specialist (`low` / `medium` / `high`), which fits the existing rule that only banded, allowlisted facts travel.
+The Device specialist never sees amounts, and the Geo specialist never sees devices.
+
+### The seven specialists
+
+| Specialist | What it looks at | Features | Notes |
+|---|---|---|---|
+| Transaction | amount rank inside its vertical, round and sub-cent amounts, `C1-C14` counts, 24 h velocity | 21 | strongest by far |
+| Identity | payer/recipient email, `M1-M9` match flags, card age, new customer, credit / card network | 31 | |
+| Device | identity-file flags: device type and family, OS, browser, screen, proxy, new-device flags | 32 | **abstains** on the ~80% of transactions with no identity record |
+| Geo | country mismatch, address rarity, `dist1/dist2`, address change since the card's last seen | 10 | |
+| Behavior | deviation from this card's own history: amount, hour, new product, `D` timedeltas | 20 | |
+| Merchant | ProductCD, recipient-email rarity | 7 | thin: IEEE-CIS has no MCC |
+| Network | distinct cards sharing an address+email, an email, a recipient email; emails per card | 4 | |
+
+Design points worth knowing:
+- **Explicit "no data" state.** Only about a quarter of transactions (144k of 590k) have identity rows. Where the
+  Device specialist has no record it contributes zero plus a coverage flag, so the stacker can tell "no evidence"
+  from "evidence of nothing". It is never given a fake zero.
+- **No lookahead.** History features (velocity, card history, shared-entity counts) are computed in time order over
+  *earlier* rows only. A test proves a row's features do not change when later rows are removed.
+- **No test-period leakage.** Percentile cuts, caps and rarity counts come from the training period only. A test
+  distorts test-period rows and checks that training rows are untouched.
+- **Protocol.** The first 80% of the time window is training, the last 20% is the test (same cut as the existing
+  pipeline). Within training, the first 70% fits each specialist and the last 30% fits the stacker on scores the
+  specialists have not seen. The test set never fits anything.
+
+### Results (real IEEE-CIS: 590,540 transactions, 3.5% fraud, 118,108 test rows)
+
+"Catch at 5%" is the share of all fraud that lands in the top 5% of scores. Specialists are LightGBM models; the
+stacker is always logistic regression so the combining step stays simple to audit.
+
+| Model | AUC | Frauds caught in top 5% |
+|---|---|---|
+| Current 9-feature model (for reference) | 0.773 | 21% |
+| Specialist: Transaction | 0.847 | 48% |
+| Specialist: Identity | 0.792 | 25% |
+| Specialist: Behavior | 0.787 | 32% |
+| Specialist: Merchant | 0.701 | 27% |
+| Specialist: Geo | 0.696 | 20% |
+| Specialist: Network | 0.686 | 24% |
+| Specialist: Device (covers 20% of rows) | 0.665 | 27% |
+| **Stack of specialists (scores)** | **0.866** | **50%** |
+| **Stack of specialists (bands only)** | **0.839** | **47%** |
+| One model on all columns pooled (ceiling; needs every column in one place) | 0.882 | 51% |
+
+The same experiment with plain logistic-regression specialists (no extra dependencies):
+
+| Model | AUC | Catch at 5% |
+|---|---|---|
+| Best single specialist (Transaction) | 0.830 | 43% |
+| Stack (scores) | 0.846 | 45% |
+| Stack (bands only) | 0.815 | 44% |
+| Pooled | 0.852 | 43% |
+| Current 9-feature model | 0.772 | 23% |
+
+**What this shows**
+- The stack beats the current 9-feature model by about 0.09 AUC and finds more than twice as much fraud in the top
+  5% (50% against 21%). Passing only bands still gains about 0.066 AUC.
+- Splitting by signal family costs about 0.016 AUC against a pooled model (0.866 against 0.882): no specialist
+  sees interactions across families. That is the price of keeping each family's columns apart.
+- Leave-one-specialist-out (AUC of the stack without it): Transaction 0.822 (-0.043), Behavior 0.860 (-0.006),
+  Identity 0.863 (-0.002), Device 0.864 (-0.002), Merchant, Network and Geo 0.866 (no change). **Transaction does
+  most of the work; Transaction, Behavior and Identity carry nearly all of the gain.**
+
+### What the data told us, and what we changed
+- The first real run left Behavior weakest (AUC 0.665, catching 8% in the top 5%) because `new_product` and
+  `hour_unusual` fire on under 2% of rows: the card proxy has sparse history. Adding the unused `D2, D4, D5, D10,
+  D11, D15` timedeltas lifted it to 0.765 with logistic and 0.787 with LightGBM.
+- Much of the signal is *missingness*: `r_missing`, `addr2_missing` and `ProductCD = C` are among the strongest
+  single features, a known property of this dataset.
+- The Network specialist finds no fraud-ring signal here: `cards_per_pair` points the wrong way. This matches the
+  caveat above that the dataset cannot validate ring detection.
+- Switching each specialist from logistic regression to LightGBM lifts the stack from 0.846 to 0.866.
+
+### Caveats, stated plainly
+- **Slightly optimistic.** We looked at test-set results twice while choosing features and models. A clean figure
+  would pick every setting on the stacker's validation split and touch the test set once at the end.
+- **Identity-file parsing** was written from community descriptions of the value formats. We checked the real
+  file's values for `DeviceType`, `id_15/23/28/29/30/31/33` and `DeviceInfo` and they match, but the meaning of the
+  masked `C`, `D` and `M` columns is inferred, not documented.
+- **No "each specialist catches something the others miss" story.** On real data one specialist dominates. The
+  honest claim is that the stack beats the current model while no specialist sees another's columns, not that
+  every specialist is needed.
+- **Not deployable as is.** The banded stack needs its cut points re-derived whenever a specialist changes, and the
+  features are computed offline over the whole history rather than at checkout.
+- Wording: this narrows what any one agent sees. It does not make anything "PCI compliant".
+
+### Run it
+```
+pip install -r requirements-experiments.txt          # scikit-learn, lightgbm: only for --model lgbm
+python -m cardguard.specialists.experiment --synthetic          # offline, seconds, six injected fraud types
+python -m cardguard.specialists.experiment                      # real data, ~2 min first run (builds the cache)
+python -m cardguard.specialists.experiment --model lgbm         # LightGBM specialists, ~1.5 min
+python -m cardguard.specialists.experiment --rebuild            # ignore datasets/specialist_features.npz
+python -m cardguard.specialists.experiment --limit 50000        # quick look at the first 50k rows
+python -m pytest tests/test_specialists.py -q                   # 10 tests, offline
+```
+Needs `datasets/train_transaction.csv` and `datasets/train_identity.csv` (the `test_*` files have no labels and
+are not used). Synthetic mode is a wiring check only: its fraud types are built so each is visible to one
+specialist, so its numbers say nothing about real performance.
+
+### Decision for the team
+1. **Show it as a result** (Innovation, Technical execution): the 0.866 against 0.773 comparison, with the caveats
+   above.
+2. **Or merge it in.** That is a larger change than the experiment: the Grid would carry several specialists'
+   bands instead of one merchant reply, so the rule "two nodes answering one decision = conflicting replies =
+   human review" (invariant 1a) needs rework, each band must be added to `WIRE_SCHEMA` as a closed vocabulary with
+   a test, and specialists must score the same transaction through a shared key that reveals nothing about the
+   card. If we do, wire only Transaction, Behavior and Identity: the other four add under 0.005 AUC combined.
 
 ## Decision logic
 
