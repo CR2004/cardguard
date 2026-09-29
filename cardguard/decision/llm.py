@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import os
 
-DEFAULT_MODEL = "flwrlabs/endeavor-1.0"  # Flower Endeavor, the id api.flower.ai lists (Sep 29); override with ENDEAVOR_MODEL / LLM_MODEL
+DEFAULT_MODEL = "Flwrlabs/endeavor-v1.0"  # Flower Endeavor, as served through the Flower runtime; override with ENDEAVOR_MODEL / LLM_MODEL
 
 
 PAIRS = (("LLM_BASE_URL", "LLM_API_KEY"), ("FLWR_RUNTIME_BASE_URL", "FLWR_RUNTIME_API_KEY"),

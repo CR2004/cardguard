@@ -25,6 +25,7 @@ WIRE_SCHEMA: dict[str, set[str]] = {
     "new_customer": {"yes", "no"},
     "model_risk_band": {"low", "medium", "high"},
     "network_velocity_band": {"low", "medium", "high"},  # set by the coordinator: same card at 1 / 2 / 3+ merchants in 10 min
+    "specialist_stack_band": {"low", "medium", "high"},  # four one-signal-family models (FedAvg across merchants), stacked
     # the bank's attestations: round 1 about the cardholder, round 2 about travel (never a place or a time)
     "issuer_behavior": {"low", "medium", "high", "unknown"},
     "issuer_recent_declines": {"none", "some", "many", "unknown"},

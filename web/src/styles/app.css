@@ -184,6 +184,8 @@ h1, h2, h3 { margin: 0; }
 .scenario--collaborative { --sc: var(--amber); --sc-soft: var(--amber-soft); }
 .scenario--fraud { --sc: var(--coral); --sc-soft: var(--coral-soft); }
 .scenario--rogue { --sc: var(--iris); --sc-soft: var(--iris-soft); }
+.scenario--injection { --sc: var(--coral); --sc-soft: var(--coral-soft); }
+.scenario--ring { --sc: var(--amber); --sc-soft: var(--amber-soft); }
 .scenario:hover:not(:disabled) { background: var(--glass-2); border-color: var(--hairline-2); }
 .scenario:active:not(:disabled) { transform: scale(0.98); }
 .scenario:disabled { opacity: 0.5; }
@@ -198,6 +200,12 @@ h1, h2, h3 { margin: 0; }
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--sc) 35%, transparent), 0 12px 32px -16px color-mix(in srgb, var(--sc) 60%, transparent);
 }
 .scenario-note { margin: -4px 2px 0; font-size: 13px; line-height: 1.5; color: var(--text-2); }
+.ring-log { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; font-size: 12px; }
+.ring-log li { display: grid; grid-template-columns: 1fr auto auto; gap: 8px; align-items: baseline; color: var(--text-2); }
+.ring-log li b { color: var(--text); font-weight: 600; }
+.ring-log li small { color: var(--text-3, var(--text-2)); }
+.ring-log li[data-state="needs_review"] b { color: var(--amber); }
+.ring-log li[data-state="declined"] b, .ring-log li[data-state="blocked"] b { color: var(--coral); }
 
 /* the payment card: the one light, physical object on the page */
 .paycard {

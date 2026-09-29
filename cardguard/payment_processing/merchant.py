@@ -9,7 +9,7 @@ Flow per purchase:
   merchant node -> derives banded facts -> Ledger.disclose() (wire guard)
   coordinator   -> round 2 only if the store and the bank disagree: travel_check from the bank
   coordinator   -> approve / step_up / decline                                 [banded facts only]
-  merchant node -> approve: capture the TEST-mode authorization hold; step_up: human queue; decline: void (cancel it)
+  merchant node -> approve: confirm a TEST-mode PaymentIntent; step_up: human queue; decline: void
 
 The bank attests; it never processes the payment. Stripe is the only payment rail.
 Invariant: the ledger never holds a payment-method id, a card number, or a verification id.
@@ -28,6 +28,7 @@ import numpy as np
 
 from cardguard.payment_processing import agent_llm
 from cardguard.training import fl
+from cardguard.training import retrain as rt
 from cardguard.data import ieee_cis as fl_data
 from cardguard.decision.coordinator import TRAVEL_PURPOSE, decide, hold_unanswered, needs_travel_check
 from cardguard.decision.explain import explain
@@ -36,8 +37,10 @@ from cardguard.decision import audit
 from cardguard.decision import network as net
 from cardguard.decision.guard import WIRE_SCHEMA, Ledger, WireViolation, strip_for_wire
 from cardguard.bank.client import BankClient, region_of
+from cardguard.payment_processing import review_store
 from cardguard.payment_processing import trace as tr
 from cardguard.payment_processing.errors import ProcessorReject
+from cardguard.specialists import live as spec_live
 
 MERCHANT_ID = os.environ.get("MERCHANT_ID", "cardguard-store")
 # One merchant process can front several stores (the fraud-ring demo): each has its own id on the
@@ -50,6 +53,11 @@ REVIEWER_TOKEN = os.environ.get("REVIEWER_TOKEN", "")     # the human reviewer's
 # Demo controls let the page choose the buyer's country, the hour, and the model-driven agent mode.
 # In production these are derived server-side (IP geolocation, the clock) and the agent mode is off.
 DEMO_CONTROLS = os.environ.get("DEMO_CONTROLS", "0") == "1"
+# A soft decline (no hard flag) is a second look, not a final refusal: a human can confirm or overturn it.
+SECOND_LOOK_ON_DECLINE = os.environ.get("SECOND_LOOK_ON_DECLINE", "1") != "0"
+TWO_REVIEWER_ABOVE_CENTS = int(os.environ.get("TWO_REVIEWER_ABOVE_CENTS", "0"))  # 0 = off; above it an approval needs two reviewers
+LABELS_FILE = os.environ.get("LABELS_FILE", str(ROOT / ".demo" / "labels.jsonl"))
+REVIEW_AUDIT_FILE = os.environ.get("REVIEW_AUDIT_FILE", str(ROOT / ".demo" / "review_audit.jsonl"))
 ALLOWED_HOSTS = {h.strip() for h in os.environ.get("MERCHANT_HOSTS", "127.0.0.1:4242,localhost:4242,127.0.0.1,localhost").split(",")}
 MAX_AMOUNT_CENTS = 10_000_000                             # $100,000: anything above is not a checkout
 CHECKOUT_RATE_PER_MINUTE = int(os.environ.get("CHECKOUT_RATE_PER_MINUTE", "30"))  # per client address
@@ -164,6 +172,10 @@ class AmountBaseline:
 
 
 baseline = AmountBaseline(SEED_CUTS[VERTICAL])
+# Four one-signal-family models (cardguard.specialists): None without specialist_weights.json, and the node
+# then decides exactly as before. Only their stacked band crosses the wire; the four bands stay in the audit note.
+SPECIALISTS = spec_live.load(VERTICAL)
+card_history = spec_live.CardHistory()
 
 app = Flask(__name__, static_folder=None)
 app.config["MAX_CONTENT_LENGTH"] = 64 * 1024  # a checkout body is well under 8 KB
@@ -217,7 +229,9 @@ ledger = MerchantLedger()
 pending: dict[str, dict] = {}       # review id -> {verification_id, amount, facts, verdict}; vid stays here
 pending_decisions: dict[str, dict] = {}  # decision id -> {payload, note, facts}: what the merchant agent may disclose
 alerts: dict[str, dict] = {}             # card reference -> network alert from the coordinator
-labels: list[tuple[list[float], int]] = []  # (local features, 0/1) from human reviews and chargebacks; never leave the node
+label_store = review_store.LabelStore(LABELS_FILE, len(fl.FEATURES))
+labels: list[tuple[list[float], int]] = label_store.load()  # (local features, 0/1) from human reviews and chargebacks; never leave the node
+review_audit = review_store.ReviewAudit(REVIEW_AUDIT_FILE)
 payments: dict[str, dict] = {}           # auth code -> {amount, features, store, t, disputed}: recent approved payments
 registry = None                          # federation node registry (cardguard.training.retrain.Registry), lazy
 retrain_log: list[dict] = []
@@ -378,10 +392,52 @@ def _prune_state(now: float, max_payments: int = 500) -> None:
     for rid in [k for k, v in pending.items() if now - v.get("t", now) > 3600]:  # unreviewed for an hour: void
         item = pending.pop(rid)
         settle(item["vid"], item["amount"], approve=False)
+        review_audit.record(review_store.expiry_entry(rid, item, now))
     for did in [k for k, v in pending_decisions.items() if now - v.get("t", now) > 600]:
         pending_decisions.pop(did, None)
     del labels[:-2000]
     del retrain_log[:-100]
+
+
+# Instant learning: every human decision immediately updates this node's fraud-model weights. The update is a
+# pure function of (the last federated weights, a replay sample of this node's own rows, all human labels), so
+# it never compounds, does not depend on label order, and is recomputed the same way after a restart.
+INSTANT_LEARNING = os.environ.get("INSTANT_LEARNING", "1") != "0"
+INSTANT_LABEL_SHARE = float(os.environ.get("INSTANT_LABEL_SHARE", rt.INSTANT_LABEL_SHARE))
+GLOBAL_WEIGHTS = BASE_WEIGHTS.copy()   # the last federated weights (the shipped file, or the last Retrain round)
+_replay_cache = None
+
+
+def _replay():
+    """A fixed sample of this node's own ordinary rows (real vertical slice, or synthetic without the dataset)."""
+    global _replay_cache
+    if _replay_cache is None:
+        reg = _registry()
+        _replay_cache = rt.replay_sample(*reg.rows(VERTICAL if VERTICAL in reg.sources() else fl.MERCHANTS[0]))
+    return _replay_cache
+
+
+def learn_from_labels() -> None:
+    global FL_WEIGHTS
+    Xr, yr = _replay()
+    FL_WEIGHTS = rt.instant_update(GLOBAL_WEIGHTS, Xr, yr, labels, label_share=INSTANT_LABEL_SHARE)
+
+
+def add_label(features, label: int, source: str, reason, decision_id, now: float) -> dict:
+    """Store a human label and learn from it now. Returns what changed for this payment (bands only); a failure
+    to learn never fails the decision it follows."""
+    labels.append((features, label))
+    label_store.append(features, label, source, reason, decision_id, now)
+    if not INSTANT_LEARNING:
+        return {"learning": "off", "labels": len(labels)}
+    try:
+        x = np.array([features], dtype=float)
+        before = fl.risk_band(float(fl.predict_proba(FL_WEIGHTS, x)[0]))
+        learn_from_labels()
+        return {"learning": "instant", "labels": len(labels), "model_band_before": before,
+                "model_band_after": fl.risk_band(float(fl.predict_proba(FL_WEIGHTS, x)[0]))}
+    except Exception as e:  # noqa: BLE001 - the model is never allowed to block a human decision
+        return {"learning": "failed", "error": type(e).__name__, "labels": len(labels)}
 
 
 def settle(vid: str, amount_cents: int, approve: bool) -> dict:
@@ -471,7 +527,7 @@ def _checkout(body: dict, blob: str, amount: int, hour: int, attack, store: str,
 
     # --- the payment-method id goes to Stripe; the processor answers with facts only ---
     asked = time.time()
-    _step(trace, "processor.verify.request", src="store", dst="stripe", detail="payment-method id: Stripe authorizes a hold and checks the card; nothing is captured yet")
+    _step(trace, "processor.verify.request", src="store", dst="stripe", detail="payment-method id, looked up in Stripe")
     try:
         card = processor.verify(blob, amount, MERCHANT_ID)
     except ProcessorReject as e:
@@ -493,7 +549,8 @@ def _checkout(body: dict, blob: str, amount: int, hour: int, attack, store: str,
     seen[key] = hits + [now]
     first_time = key not in card_first_seen  # same meaning as the training feature: first sighting of this card
     card_age_days = (now - card_first_seen.setdefault(key, now)) / 86400
-    days_since_prev = (now - card_last_seen[key]) / 86400 if key in card_last_seen else 0.0
+    had_prev = key in card_last_seen
+    days_since_prev = (now - card_last_seen[key]) / 86400 if had_prev else 0.0
     card_last_seen[key] = now
     _prune_state(now)
 
@@ -517,6 +574,16 @@ def _checkout(body: dict, blob: str, amount: int, hour: int, attack, store: str,
                           fl_data.days_feature(card_age_days), fl_data.days_feature(days_since_prev)]],
                         dtype=float)  # same order as fl.FEATURES
     payload["model_risk_band"] = fl.risk_band(float(fl.predict_proba(FL_WEIGHTS, features)[0]))
+    hist = card_history.features(key, dollars, hour)  # prior purchases only; recorded below
+    if SPECIALISTS is not None:
+        scored = SPECIALISTS.score(spec_live.build_features(
+            amount_cents=amount, cuts=(p10, p50, p90), recent_purchases=len(hits), first_time=first_time,
+            card_age_days=card_age_days, days_since_prev=days_since_prev, had_prev=had_prev, hour=hour,
+            funding=card["funding"], country_mismatch=payload["country_mismatch"] == "yes", hist=hist,
+            prior_cap=SPECIALISTS.prior_cap))
+        payload["specialist_stack_band"] = scored["stack_band"]
+        note.update({f"specialist_{k}": v for k, v in scored["bands"].items()})
+    card_history.record(key, dollars, hour)
     _step(trace, "store.facts", src="store", evidence={k: v for k, v in payload.items() if tr.PARTY_OF.get(k) == "store"},
           private={"buyer_region": region_of(buyer_country), "card_region": card_region,
                    "purchases_here_24h": len(hits)})
@@ -656,18 +723,22 @@ def _checkout(body: dict, blob: str, amount: int, hour: int, attack, store: str,
         _settled(trace, payment, approve=True)
         if payment.get("status") == "succeeded":
             payments[payment["auth_code"]] = {"amount": amount, "features": local_features, "store": store,
-                                              "facts": verdict.get("facts", facts), "t": time.time(), "disputed": False}
+                                              "facts": verdict.get("facts", facts), "t": time.time(), "disputed": False,
+                                              "decision_id": decision_id}
         _step(trace, "outcome", outcome="approved", charged=payment.get("status") == "succeeded")
         return jsonify({"outcome": "approved", "verdict": verdict, "payment": payment, **extra})
-    if verdict["decision"] == "step_up":
+    suspected = ("step_up" if verdict["decision"] == "step_up" else
+                 "soft_decline" if verdict["decision"] == "decline" and not verdict.get("hard") and SECOND_LOOK_ON_DECLINE else None)
+    if suspected:  # hard declines never get here: they stay final and are never queued
         rid = secrets.token_hex(4)
         pending[rid] = {"vid": vid, "amount": amount, "facts": verdict.get("facts", facts), "verdict": verdict,
-                        "features": local_features, "store": store, "t": time.time(),
+                        "features": local_features, "store": store, "t": time.time(), "decision_id": decision_id,
+                        "kind": suspected, "cites": list(verdict.get("cites", [])),
                         "trace_id": trace.id if trace else None}
         _step(trace, "review.opened", src="gate", dst="human", review_id=rid,
               detail="automation paused: the payment is held until a person decides")
         _step(trace, "outcome", outcome="needs_review", charged=False)
-        return jsonify({"outcome": "needs_review", "review_id": rid, "verdict": verdict, **extra})
+        return jsonify({"outcome": "needs_review", "review_id": rid, "suspected": suspected, "verdict": verdict, **extra})
     _settled(trace, settle(vid, amount, approve=False), approve=False)
     _step(trace, "outcome", outcome="declined", charged=False)
     return jsonify({"outcome": "declined", "verdict": verdict, "charged": False, **extra})
@@ -676,8 +747,18 @@ def _checkout(body: dict, blob: str, amount: int, hour: int, attack, store: str,
 @app.get("/reviews")
 def reviews():
     return jsonify([{"id": k, "amount": v["amount"], "facts": public_fields(v["facts"]), "store": v.get("store"),
+                     "suspected": v.get("kind"), "awaiting_second": bool(v.get("first_approval")),
                      "verdict": {**v["verdict"], "facts": public_fields(v["verdict"].get("facts", {}))}}
                     for k, v in pending.items()])  # the verification id stays on the node
+
+
+@app.get("/review-stats")
+def review_stats():
+    if (denied := reviewer_only()) is not None:
+        return denied
+    return jsonify({**review_store.stats(review_audit.entries, pending, time.time()),
+                    "reasons": list(review_store.REASONS), "audit_chain_ok": review_audit.verify(),
+                    "audit_head": audit.head(review_audit.entries), "audit_load_error": review_audit.load_error})
 
 
 @app.get("/trace/<trace_id>")
@@ -700,25 +781,48 @@ def review(rid, action):
         return denied
     if action not in {"approve", "decline"}:
         return jsonify({"error": "action must be approve or decline"}), 400
-    item = pending.pop(rid, None)
+    body = request.get_json(silent=True) if request.get_data() else None
+    if body is None and request.get_data():
+        return jsonify({"error": "body must be a JSON object"}), 400
+    op, err = review_store.parse_opinion(body, request.headers.get("X-Reviewer-Id"))
+    if err:  # nothing changes on a bad opinion; the note stays on this node either way
+        return jsonify({"error": err}), 400
+    item = pending.get(rid)
     if not item:
         return jsonify({"error": "unknown review"}), 404
-    labels.append((item["features"], 0 if action == "approve" else 1))  # the human just taught the model
+    now, first_reviewer = time.time(), None
+    if action == "approve" and TWO_REVIEWER_ABOVE_CENTS and item["amount"] > TWO_REVIEWER_ABOVE_CENTS:
+        if op["reviewer"] is None:
+            return jsonify({"error": "X-Reviewer-Id required: this amount needs two reviewers"}), 400
+        first = item.get("first_approval")
+        if first is None:  # declining is the safe direction and needs one reviewer; approving needs two
+            item["first_approval"] = {"reviewer": op["reviewer"]}
+            review_audit.record(review_store.opinion_entry(rid, item, action, "awaiting_second", op, now))
+            return jsonify({"outcome": "awaiting_second", "first_reviewer": op["reviewer"]}), 202
+        if first["reviewer"] == op["reviewer"]:
+            return jsonify({"error": "a different reviewer must give the second approval"}), 409
+        first_reviewer = first["reviewer"]
+    pending.pop(rid)
     trace = traces.get(item.get("trace_id") or "")
     _step(trace, "review.decided", src="human", dst="store", action=action, review_id=rid)
+    learned = add_label(item["features"], 0 if action == "approve" else 1, "review", op["reason"], item.get("decision_id"), now)  # the human just taught the model
+    review_audit.record(review_store.opinion_entry(rid, item, action, "approved" if action == "approve" else "declined",
+                                                   op, now, first_reviewer))
     if action == "approve":
         payment = settle(item["vid"], item["amount"], True)
         _settled(trace, payment, approve=True)
         if payment.get("status") == "succeeded":
             payments[payment["auth_code"]] = {"amount": item["amount"], "features": item["features"], "store": item["store"],
-                                              "facts": item["facts"], "t": time.time(), "disputed": False}
+                                              "facts": item["facts"], "t": time.time(), "disputed": False,
+                                              "decision_id": item.get("decision_id")}
         _step(trace, "outcome", outcome="approved_by_human", charged=payment.get("status") == "succeeded")
-        return jsonify({"outcome": "approved_by_human", "payment": payment, "labels": len(labels), "trace_id": item.get("trace_id")})
+        return jsonify({"outcome": "approved_by_human", "payment": payment, "labels": len(labels), "learned": learned,
+                        "trace_id": item.get("trace_id")})
     payment = settle(item["vid"], item["amount"], False)
     _settled(trace, payment, approve=False)
     _step(trace, "outcome", outcome="declined_by_human", charged=False)
     return jsonify({"outcome": "declined_by_human", "payment": payment,
-                    "charged": False, "labels": len(labels), "trace_id": item.get("trace_id")})
+                    "charged": False, "labels": len(labels), "learned": learned, "trace_id": item.get("trace_id")})
 
 
 @app.get("/payments")
@@ -736,8 +840,8 @@ def dispute(auth_code):
     if p is None or p["disputed"]:
         return jsonify({"error": "unknown or already disputed payment"}), 404
     p["disputed"] = True
-    labels.append((p["features"], 1))
-    return jsonify({"disputed": auth_code, "labels": len(labels)})
+    learned = add_label(p["features"], 1, "chargeback", None, p.get("decision_id"), time.time())
+    return jsonify({"disputed": auth_code, "labels": len(labels), "learned": learned})
 
 
 @app.get("/payments/<auth_code>/evidence")
@@ -790,18 +894,21 @@ def agent_join():
 @app.post("/agent/retrain")
 def agent_retrain():
     """A federated round across every registered node plus local personalisation on human labels."""
-    global FL_WEIGHTS
+    global FL_WEIGHTS, GLOBAL_WEIGHTS
     if not local_only():
         return jsonify({"error": "local only"}), 403
     if (denied := reviewer_only()) is not None:
         return denied
-    from cardguard.training import retrain as rt
     reg = _registry()
     my_node = f"node-{VERTICAL}"
     if my_node not in reg.nodes:  # synthetic registry: this node still takes part, with its nearest data source
         reg.join(my_node, VERTICAL if VERTICAL in reg.sources() else fl.MERCHANTS[0])
     out = rt.retrain(reg, my_node, labels, BASE_WEIGHTS)
+    GLOBAL_WEIGHTS = out["global_weights"]  # the lesson spread across the network becomes the new starting point
     FL_WEIGHTS = out["weights"]
+    if INSTANT_LEARNING:  # then this node's own labels are applied the gentle, replay-anchored way
+        learn_from_labels()
+        out["after"] = [fl.risk_band(float(fl.predict_proba(FL_WEIGHTS, np.array([f]))[0])) for f, _ in labels]
     entry = {"t": time.time(), "nodes": out["nodes"], "labels": out["labels"], "before": out["before"], "after": out["after"]}
     retrain_log.append(entry)
     return jsonify(entry)
@@ -819,6 +926,13 @@ def get_ledger():
     shown = [{**e, "fields": public_fields(e["fields"])} if "fields" in e else e for e in ledger.entries[-50:]]
     return jsonify({"entries": shown, "chain_ok": ok, "chain_head": audit.head(ledger.entries),
                     "card_numbers_seen_by_coordinator": ledger.card_numbers_seen_by_coordinator()})
+
+
+if INSTANT_LEARNING and labels:  # a restart keeps what the reviewers taught: the saved labels are the source of truth
+    try:
+        learn_from_labels()
+    except Exception as e:  # noqa: BLE001 - start with the shipped weights rather than not at all
+        print(f"could not re-apply {len(labels)} saved labels ({type(e).__name__}); using the shipped weights")
 
 
 if __name__ == "__main__":

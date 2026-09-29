@@ -96,6 +96,7 @@ export interface CheckoutRequest {
 
 export interface CheckoutResult {
   outcome: string;
+  verdict?: { decision?: string; decided_by?: string; network?: { band: string; merchants: string[] } };
   reason?: string;
   review_id?: string;
   charged?: boolean;

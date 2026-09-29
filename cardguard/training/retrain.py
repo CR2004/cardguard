@@ -21,6 +21,15 @@ FINETUNE_EPOCHS = 40
 FINETUNE_LR = 0.5
 ROUNDS = 10
 
+# Instant learning: after EVERY human decision the node's weights are recomputed from the last federated
+# weights, a replay sample of the node's own ordinary rows, and all its human labels. Replay anchors the
+# payments nobody labelled; the drift cap bounds the worst case however many labels arrive.
+INSTANT_LABEL_SHARE = 0.10      # one human decision counts as this share of the replay sample (tunable, see README)
+INSTANT_EPOCHS = 30
+INSTANT_LR = 1.0
+REPLAY_ROWS = 20000
+MAX_DRIFT = 3.0                 # no weight may move further than this from the last federated weights
+
 
 class Registry:
     """Nodes in the federation: name -> data source (a real vertical or a synthetic merchant)."""
@@ -93,10 +102,39 @@ def finetune(weights: np.ndarray, labels: list) -> np.ndarray:
     return w
 
 
+def replay_sample(X: np.ndarray, y: np.ndarray, n: int = REPLAY_ROWS, seed: int = 0):
+    """A fixed, reproducible sample of this node's own ordinary rows (all of them if there are fewer than n)."""
+    if len(y) <= n:
+        return X, y
+    idx = np.random.default_rng(seed).choice(len(y), n, replace=False)
+    return X[idx], y[idx]
+
+
+def instant_update(global_weights: np.ndarray, replay_X: np.ndarray, replay_y: np.ndarray, labels: list,
+                   label_share: float = INSTANT_LABEL_SHARE, epochs: int = INSTANT_EPOCHS,
+                   lr: float = INSTANT_LR, max_drift: float = MAX_DRIFT) -> np.ndarray:
+    """The node's weights given ALL its human labels. A pure function of (global weights, replay, labels):
+    recomputed from the same starting point every time, so it never compounds, does not depend on the order
+    the labels arrived in, and gives the same answer after a restart."""
+    if not labels:
+        return global_weights.copy()
+    Xl = np.array([f for f, _ in labels], dtype=float)
+    yl = np.array([lab for _, lab in labels], dtype=float)
+    X, y = np.vstack([replay_X, Xl]), np.r_[replay_y, yl]
+    # one decision weighs `label_share` of the replay sample, so the effect is the same for a small or a large merchant
+    sw = np.r_[np.where(replay_y == 1, 10.0, 1.0), np.full(len(yl), label_share * len(replay_y))]  # 10.0 = fl.local_train's pos_weight
+    w = global_weights.copy()
+    for _ in range(epochs):
+        err = (fl.predict_proba(w, X) - y) * sw
+        w -= lr * np.r_[err.mean(), X.T @ err / len(y)]
+    return np.clip(w, global_weights - max_drift, global_weights + max_drift)
+
+
 def retrain(registry: Registry, my_node: str, my_labels: list, weights: np.ndarray) -> dict:
     """One federated round plus personalisation. Returns new weights and before/after for the labels."""
     before = [fl.risk_band(float(fl.predict_proba(weights, np.array([f]))[0])) for f, _ in my_labels]
     global_w = federated_round(registry, my_node, my_labels, weights)
     local_w = finetune(global_w, my_labels)
     after = [fl.risk_band(float(fl.predict_proba(local_w, np.array([f]))[0])) for f, _ in my_labels]
-    return {"weights": local_w, "nodes": len(registry.nodes), "labels": len(my_labels), "before": before, "after": after}
+    return {"weights": local_w, "global_weights": global_w, "nodes": len(registry.nodes), "labels": len(my_labels),
+            "before": before, "after": after}

@@ -109,11 +109,12 @@ user_prompt via StartRunRequest exactly like `flwr chat` does. The SuperLink spa
 - TYPESAFE_API_KEY (Jev), optional JEV_MODEL to pin a version
 - Endeavor: FLWR_RUNTIME_BASE_URL / FLWR_RUNTIME_API_KEY are injected inside an AgentApp;
   elsewhere ENDEAVOR_BASE_URL / ENDEAVOR_API_KEY. ENDEAVOR_MODEL defaults to
-  `flwrlabs/endeavor-1.0` (verified live Sep 29: the id api.flower.ai/v1/models lists; `Flwrlabs/endeavor-v1.0` is rejected).
+  `Flwrlabs/endeavor-v1.0` (confirmed Sep 29: the model to call with the Flower API key).
 - STORES=store-a,store-b,store-c: one merchant node fronting several stores (fraud-ring demo).
 - FL_DP_NOISE / FL_DP_CLIP: differential privacy on flower_app training (0 = off).
 - REVIEWER_TOKEN: credential for human actions on the merchant node (review, chargeback, evidence,
-  retrain, join). run_demo.py mints and prints it; the page asks once. CHECKOUT_RATE_PER_MINUTE (30).
+  retrain, join). run_demo.py honours a preset value of >= 8 chars (.env, survives restarts) or mints
+  and prints one; the page asks once. CHECKOUT_RATE_PER_MINUTE (30).
 - DEMO_CONTROLS=1 (run_demo sets it; tests set it in conftest): the page may choose buyer country,
   hour, attack mode and the model-driven agent; the merchant shows detailed processor reasons; "latest"
   decision ids are allowed. Unset = production: country from geolocate(), hour from the clock, no
@@ -125,7 +126,7 @@ user_prompt via StartRunRequest exactly like `flwr chat` does. The SuperLink spa
   them; the bank process never receives the Stripe keys or the reviewer token.
 - .env at the repo root is loaded by run_demo.py and scripts/run_super*.py (cardguard/dotenv.py); .env.example lists everything.
 - LLM_BASE_URL / LLM_API_KEY / LLM_MODEL only for the live injection demo.
-- Flower-served models: FLWR_MODEL_API_KEY (flower.ai Profile -> Settings -> API Keys); model `flwrlabs/endeavor-1.0`.
+- Flower-served models: FLWR_MODEL_API_KEY (flower.ai Profile -> Settings -> API Keys); model `Flwrlabs/endeavor-v1.0`.
 
 ## Flower facts (verified against flwr 1.39.0 locally; see the installed source, not memory)
 - Training: `from flwr.app import ArrayRecord, Context, Message, MetricRecord, RecordDict`,
@@ -140,6 +141,16 @@ user_prompt via StartRunRequest exactly like `flwr chat` does. The SuperLink spa
   `flwr log <run-id> supergrid --show`. Local: `flower-superlink --insecure`, `~/.flwr/config.toml`
   `[superlink.local-agent] address="127.0.0.1:8000" insecure=true`, `flwr run . local-agent`.
 - Each SuperGrid task times out 5 minutes after it starts Running. One decision per task.
+- SuperGrid, verified live Sep 29 (flwr 1.39 CLI, SuperGrid runtime flwr 1.40 on Python 3.13, so
+  requires-python must allow 3.13): `~/.flwr/config.toml` `[superlink.supergrid] address="api.flower.ai"
+  federation="@ac007/cardguard"` (the launcher sends `conn.federation`); `flwr login supergrid`.
+  SuperNode: `ssh-keygen -t ecdsa -b 384 -N "" -f ~/supernodes_keys/cardguard-store`,
+  `flwr supernode register <pub> supergrid --name cardguard-store`, `flwr federation create cardguard supergrid`
+  (add-supernode to @ac007/personal is refused, code 10), `flwr federation add-supernode <id> @ac007/cardguard supergrid`,
+  `flower-supernode --superlink fleet-supergrid.flower.ai:443 --auth-supernode-private-key ~/supernodes_keys/cardguard-store`
+  (node 14493107910137511207; the merchant node on :4242 must be up on the same laptop). A decision took
+  ~190 s end to end (task scheduling + per-run env), the Grid exchange itself ~7 s; merchant GRID_TIMEOUT is 240 s.
+  `python run_demo.py --federation supergrid` selects it. Runs: `flwr list supergrid`, `flwr log <run-id> supergrid --show`.
 - Run series: launch.py stores the series id in .demo/series_<superlink>.txt and passes it to
   StartRunRequest, so the coordinator's context.state (the network table) persists across decisions.
   Verified live: three stores, three runs, third purchase flagged with an alert naming all three.
@@ -169,9 +180,7 @@ Done: see README "Status for the team". Accuracy claims were corrected on Sep 29
 NOT beat lone merchants on their own data for large verticals; FedAvg + local training never loses
 and helps small merchants (<~1,000 rows). Never say "federated beats any merchant". The ring
 detection is not validated by IEEE-CIS (69 cross-vertical sightings in 590k rows).
-Run against real services on Sep 29: Stripe TEST (manual-capture holds), Jev, Endeavor via api.flower.ai
-(`flwrlabs/endeavor-1.0`; upstream often 502s, the template covers it), local Flower SuperLink/SuperNode.
-Not yet: SuperGrid (needs an interactive `flwr login supergrid`).
+Not yet run against real services: Jev, Endeavor / Flower-served models, Stripe, SuperGrid.
 Left: commit + push; `flwr login supergrid` + SuperGrid run (needs a SuperNode we control);
 FLWR_MODEL_API_KEY / TYPESAFE_API_KEY / Stripe test keys; ship personalisation at merchant startup;
 dispute draft + injection demo through a Flower task; UI pass; Hub publish; video; pitch.

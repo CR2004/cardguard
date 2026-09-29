@@ -7,7 +7,7 @@ name = "cardguard"
 version = "0.1.0"
 description = "Multi-party card-risk decisions on Flower where card data never enters any model's context"
 license = { file = "LICENSE" }
-requires-python = ">=3.11,<3.13"
+requires-python = ">=3.11,<3.14"
 dependencies = [
     "flask>=3.0",
     "numpy>=2.0",

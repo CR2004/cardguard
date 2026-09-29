@@ -1,18 +1,16 @@
 """Stripe as the processor: verify / authorize / void.
 
 The store receives a Stripe payment-method id (pm_...) created by Stripe Elements in the browser:
-the card number goes from the browser to Stripe, never to us. Stripe checks the security code only
-when it authorizes (a payment method alone says cvc_check "unchecked"), so verify() places a TEST-mode
-authorization hold (a manual-capture PaymentIntent) and turns its answer into five non-sensitive
-facts; authorize() captures that hold; void() cancels it, so nothing is charged.
-Test keys only: sk_live_ / pk_live_ are refused.
+the card number goes from the browser to Stripe, never to us. verify() turns that id into five
+non-sensitive facts; authorize() confirms a TEST-mode PaymentIntent; void() drops the pending
+verification (nothing was charged yet). Test keys only: sk_live_ / pk_live_ are refused.
 """
 from __future__ import annotations
 
 import secrets
 import time
 
-from cardguard.payment_processing.processor_base import VERIFICATION_TTL, ProcessorBase
+from cardguard.payment_processing.processor_base import ProcessorBase
 
 
 class StripeProcessor(ProcessorBase):
@@ -41,19 +39,22 @@ class StripeProcessor(ProcessorBase):
         if not str(pm_id).startswith("pm_"):
             return self._reject("verify", merchant_id, "not a Stripe payment method id")
         try:
-            pi = self.sdk.PaymentIntent.create(amount=int(amount_cents), currency="usd", payment_method=pm_id, confirm=True,
-                                               capture_method="manual", expand=["latest_charge"],
-                                               automatic_payment_methods={"enabled": True, "allow_redirects": "never"})
-        except self.sdk.error.CardError as e:  # the bank refused the hold: nothing to decide, nothing charged
-            return self._reject("verify", merchant_id, f"stripe: {getattr(e, 'user_message', None) or 'card declined'}")
+            # Stripe runs the CVC/address checks when a method is attached to a customer (or confirmed);
+            # before that the result reads "unchecked". Attaching also lets the same method be charged
+            # later, so each verification gets a throwaway customer in test mode.
+            customer = self.sdk.Customer.create(description="cardguard verification")
+            self.sdk.PaymentMethod.attach(pm_id, customer=customer.id)
+            card = self.sdk.PaymentMethod.retrieve(pm_id).card
+            checks = getattr(card, "checks", None)
+            if getattr(checks, "cvc_check", None) in (None, "unchecked"):
+                self.sdk.SetupIntent.create(customer=customer.id, payment_method=pm_id, confirm=True,
+                                            payment_method_types=["card"])
+                card = self.sdk.PaymentMethod.retrieve(pm_id).card
+        except self.sdk.error.CardError:  # the issuing bank refused the card at verification
+            return self._reject("verify", merchant_id, "declined by the issuing bank")
         except Exception as e:  # noqa: BLE001 - any SDK/network failure is a refusal, never card data
             return self._reject("verify", merchant_id, f"stripe: {type(e).__name__}")
-        card = getattr(getattr(pi.latest_charge, "payment_method_details", None), "card", None)
-        if pi.status != "requires_capture" or card is None:  # e.g. 3-D Secure wants the buyer: release the hold
-            reason = f"stripe: payment {pi.status}"
-            self._cancel(pi.id)
-            return self._reject("verify", merchant_id, reason)
-        vid = self._new_verification(merchant_id, amount_cents, pi=pi.id)
+        vid = self._new_verification(merchant_id, amount_cents, pm=pm_id, customer=customer.id)
         checks = getattr(card, "checks", None)
         cvc = getattr(checks, "cvc_check", None) if checks else None
         self._log("verify", merchant_id, "ok", cvc_check=cvc or "unavailable")
@@ -63,13 +64,12 @@ class StripeProcessor(ProcessorBase):
     def authorize(self, vid: str, merchant_id: str | None = None) -> dict:
         v = self._take(vid, merchant_id, "authorize")
         try:
-            pi = self.sdk.PaymentIntent.capture(v["pi"])
+            pi = self.sdk.PaymentIntent.create(amount=v["amount"], currency="usd", payment_method=v["pm"], customer=v["customer"],
+                                               confirm=True, automatic_payment_methods={"enabled": True, "allow_redirects": "never"})
         except self.sdk.error.CardError as e:  # the bank said no
-            self._cancel(v["pi"])
             self._log("authorize", v["merchant"], "processor_declined")
             return {"status": "processor_declined", "reason": getattr(e, "user_message", "card declined")}
         except Exception as e:  # noqa: BLE001 - network/SDK failure: never a 500, never a retry that double-charges
-            self._cancel(v["pi"])  # release the hold; a capture that did go through cannot be cancelled
             self._log("authorize", v["merchant"], "processor_error", reason=type(e).__name__)
             return {"status": "processor_error", "reason": type(e).__name__}
         self._log("authorize", v["merchant"], pi.status)
@@ -77,29 +77,6 @@ class StripeProcessor(ProcessorBase):
 
     def void(self, vid: str, merchant_id: str | None = None) -> dict:
         v = self._take(vid, merchant_id, "void")
-        if not self._cancel(v["pi"]):  # an uncancelled hold lapses on its own; never a 500
-            self._log("void", v["merchant"], "void_failed")
-            return {"status": "void_failed"}
         self._log("void", v["merchant"], "voided")
         return {"status": "voided"}
-
-    def _prune(self) -> None:
-        """Before forgetting old verifications, release any hold nobody captured or cancelled
-        (a checkout that died after verify, or a review older than the TTL)."""
-        now = self.clock()
-        with self.lock:  # claimed like _take, so a late authorize or void cannot race the cancel
-            expired = [v for v in self.verifications.values() if not v["used"] and now - v["t"] > VERIFICATION_TTL]
-            for v in expired:
-                v["used"] = True
-        for v in expired:
-            self._cancel(v["pi"])
-        with self.lock:
-            super()._prune()
-
-    def _cancel(self, pi_id: str) -> bool:
-        try:
-            self.sdk.PaymentIntent.cancel(pi_id)
-        except Exception:  # noqa: BLE001
-            return False
-        return True
 
