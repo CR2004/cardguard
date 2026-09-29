@@ -1,0 +1,7 @@
+flask>=3.0
+stripe>=10.0
+numpy>=2.0
+typesafe-sdk>=0.7.2
+flwr[simulation]>=1.39
+openai>=1.60
+pytest>=8.0

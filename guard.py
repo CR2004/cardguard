@@ -1,0 +1,103 @@
+"""Wire guard: the only path by which data leaves the merchant node.
+
+Two layers, both fail closed:
+1. Allowlist schema - only known keys with known banded values may cross.
+2. Leak scanner - rejects anything that looks like a card number (Luhn-valid
+   13-19 digits, spaces/dashes allowed), a CVV field, or an expiry date,
+   even inside an allowed field.
+"""
+from __future__ import annotations
+
+import re
+import time
+from dataclasses import dataclass, field
+
+# Closed vocabulary: key -> allowed values. Nothing else crosses.
+WIRE_SCHEMA: dict[str, set[str]] = {
+    "token": set(),  # special-cased: must match TOKEN_RE
+    "amount_band": {"low", "medium", "high"},
+    "country_mismatch": {"yes", "no"},
+    "card_funding": {"credit", "debit", "prepaid", "unknown"},
+    "cvc_check": {"pass", "fail", "unavailable"},
+    "velocity_band": {"low", "medium", "high"},
+    "new_customer": {"yes", "no"},
+    "model_risk_band": {"low", "medium", "high"},
+}
+TOKEN_RE = re.compile(r"^tok_[a-p]{16}$")  # letters only: can never resemble a card number
+
+_DIGIT_RUN = re.compile(r"(?:\d[ -]?){13,19}")
+_EXPIRY = re.compile(r"\b(0[1-9]|1[0-2])\s*/\s*(\d{2}|\d{4})\b")
+_CVV_KEY = re.compile(r"cvv|cvc|csc|security.?code", re.I)
+
+
+class WireViolation(Exception):
+    pass
+
+
+def luhn_ok(digits: str) -> bool:
+    total, alt = 0, False
+    for ch in reversed(digits):
+        d = int(ch)
+        if alt:
+            d *= 2
+            if d > 9:
+                d -= 9
+        total += d
+        alt = not alt
+    return total % 10 == 0
+
+
+def find_leaks(text: str) -> list[str]:
+    """Return reasons text would leak card data (empty list = clean)."""
+    reasons = []
+    for m in _DIGIT_RUN.finditer(text):
+        digits = re.sub(r"\D", "", m.group())
+        if 13 <= len(digits) <= 19 and luhn_ok(digits):
+            reasons.append("card-number-like digits")
+    if _EXPIRY.search(text):
+        reasons.append("expiry-date-like value")
+    if _CVV_KEY.search(text):
+        reasons.append("cvv reference")
+    return reasons
+
+
+def strip_for_wire(payload: dict) -> dict:
+    """Validate a payload against the schema and scanner. Raises on anything odd."""
+    out = {}
+    for key, value in payload.items():
+        if key not in WIRE_SCHEMA:
+            raise WireViolation(f"unknown key: {key!r}")
+        if not isinstance(value, str) or len(value) > 40:
+            raise WireViolation(f"bad value type/size for {key!r}")
+        leaks = find_leaks(value)  # keys are allowlisted; scan values only
+        if leaks:
+            raise WireViolation(f"{key!r}: {', '.join(leaks)}")
+        if key == "token":
+            if not TOKEN_RE.match(value):
+                raise WireViolation("malformed token")
+        elif value not in WIRE_SCHEMA[key]:
+            raise WireViolation(f"{key!r}={value!r} not in vocabulary")
+        out[key] = value
+    return out
+
+
+@dataclass
+class Ledger:
+    """Every disclosure and every blocked attempt, with source and purpose."""
+    entries: list[dict] = field(default_factory=list)
+
+    def disclose(self, source: str, purpose: str, payload: dict) -> dict:
+        try:
+            clean = strip_for_wire(payload)
+        except WireViolation as e:
+            self.entries.append({"t": time.time(), "source": source, "purpose": purpose,
+                                 "status": "BLOCKED", "reason": str(e)})
+            raise
+        self.entries.append({"t": time.time(), "source": source, "purpose": purpose,
+                             "status": "DISCLOSED", "fields": clean})
+        return clean
+
+    def card_numbers_seen_by_coordinator(self) -> int:
+        """Audit: re-scan everything that was disclosed. Should always be 0."""
+        return sum(1 for e in self.entries if e["status"] == "DISCLOSED"
+                   and any(find_leaks(v) for v in e["fields"].values()))
