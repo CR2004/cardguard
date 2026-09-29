@@ -113,7 +113,8 @@ user_prompt via StartRunRequest exactly like `flwr chat` does. The SuperLink spa
 - STORES=store-a,store-b,store-c: one merchant node fronting several stores (fraud-ring demo).
 - FL_DP_NOISE / FL_DP_CLIP: differential privacy on flower_app training (0 = off).
 - REVIEWER_TOKEN: credential for human actions on the merchant node (review, chargeback, evidence,
-  retrain, join). run_demo.py mints and prints it; the page asks once. CHECKOUT_RATE_PER_MINUTE (30).
+  retrain, join). run_demo.py honours a preset value of >= 8 chars (.env, survives restarts) or mints
+  and prints one; the page asks once. CHECKOUT_RATE_PER_MINUTE (30).
 - DEMO_CONTROLS=1 (run_demo sets it; tests set it in conftest): the page may choose buyer country,
   hour, attack mode and the model-driven agent; the merchant shows detailed processor reasons; "latest"
   decision ids are allowed. Unset = production: country from geolocate(), hour from the clock, no

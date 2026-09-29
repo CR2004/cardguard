@@ -5,8 +5,9 @@
     python run_demo.py --stores store-a,store-b,store-c   # three stores on one node: the fraud-ring demo
 
 Stripe is the payment rail. The bank node only attests (bands about the cardholder, and round 2's
-travel_check); it never sees a card or moves money. The runner mints a reviewer token (printed; the
-page asks for it once) and a merchant-to-bank signing secret. The bank process gets an allowlisted
+travel_check); it never sees a card or moves money. The runner uses REVIEWER_TOKEN from .env when one
+is set (a memorable demo value that survives restarts), otherwise mints one and prints it; the page
+asks for it once. It also mints a merchant-to-bank signing secret. The bank process gets an allowlisted
 environment (no Stripe, model or reviewer credentials); the merchant never gets the bank's registry.
 Ctrl-C stops both.
 """
@@ -23,6 +24,18 @@ from cardguard import dotenv as _dotenv  # noqa: E402
 
 _dotenv.load()
 BANK_URL = "http://127.0.0.1:4243"
+MIN_REVIEWER_TOKEN = 8
+
+
+def reviewer_token(environ=os.environ) -> tuple[str, bool]:
+    """(token, preset): a REVIEWER_TOKEN of at least MIN_REVIEWER_TOKEN characters is honoured;
+    anything shorter is refused (a trivial credential guards every human action), unset means mint."""
+    preset = environ.get("REVIEWER_TOKEN", "").strip()
+    if preset:
+        if len(preset) < MIN_REVIEWER_TOKEN:
+            raise ValueError(f"REVIEWER_TOKEN must be at least {MIN_REVIEWER_TOKEN} characters")
+        return preset, True
+    return secrets.token_hex(8), False
 
 
 def main() -> int:
@@ -38,7 +51,12 @@ def main() -> int:
     if not os.path.exists(os.path.join(HERE, "web", "dist", "index.html")):
         print("The UI is not built yet: pnpm --dir web install && pnpm --dir web build", file=sys.stderr)
     merchant_id = os.environ.get("MERCHANT_ID", "cardguard-store")
-    reviewer, bank_secret = secrets.token_hex(8), secrets.token_hex(16)
+    try:
+        reviewer, preset = reviewer_token()
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    bank_secret = secrets.token_hex(16)
     # The bank gets an allowlisted environment: none of the Stripe, model or reviewer credentials.
     bank_env = {k: v for k, v in os.environ.items()
                 if k in {"PATH", "HOME", "LANG", "TMPDIR", "VIRTUAL_ENV", "SYSTEMROOT"} or k.startswith(("LC_", "PYTHON"))}
@@ -46,7 +64,10 @@ def main() -> int:
     env = {**{k: v for k, v in os.environ.items() if not k.startswith("BANK_")},  # never the bank's registry
            "PYTHONUNBUFFERED": "1", "REVIEWER_TOKEN": reviewer, "MERCHANT_ID": merchant_id,
            "DEMO_CONTROLS": os.environ.get("DEMO_CONTROLS", "1"), "BANK_URL": BANK_URL, "BANK_SECRET": bank_secret}
-    print("reviewer token (the page asks for it once): %s" % reviewer)
+    if preset:
+        print("reviewer token: using REVIEWER_TOKEN from the environment (the page asks for it once)")
+    else:
+        print(f"reviewer token (the page asks for it once): {reviewer}")
     print("open http://127.0.0.1:4242\n")
     bank = subprocess.Popen([sys.executable, "-m", "cardguard.bank.node"], cwd=HERE, env=bank_env)
     try:
