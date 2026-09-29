@@ -20,7 +20,7 @@ fetched the facts; fraud-ring detection across stores with memory across Flower 
 with a reviewer credential; chargebacks and reviews that retrain the network (federated round +
 local fine-tune); join-the-network command; differential privacy with a reported budget; dispute
 evidence agent; live prompt-injection demo contained by the guard; real-data training on IEEE-CIS;
-142 offline tests (131 pass in a plain environment; 4 tests and 2 test files need `flwr`); two code reviews (dead code, security) applied.
+194 offline tests (153 pass in a plain environment; 4 tests and 3 test files need `flwr`); two code reviews (dead code, security) applied.
 
 **Left, in order:** review and merge the `specialists-experiment` pull request (checklist below); Stripe test keys and the Flower model key in `.env`;
 `flwr login supergrid` and the SuperGrid run (needs a SuperNode we control); personalisation at
@@ -34,13 +34,13 @@ merchant startup; UI polish (the new review panel has not been opened in a brows
 - *Human in the loop.* Soft declines get a second look; a human's opinion has a reason from a fixed list, is
   audited in a hash-chained log, and becomes a saved training label.
 - Scoreboard of what is live: [Scoreboard](#fraud-specialists-four-models-trained-merchant-by-merchant). Details, the live wiring and the plan: [Fraud specialists](#fraud-specialists-four-models-trained-merchant-by-merchant).
-  A plain-words before-and-after guide for the team: [OLD_VS_NEW.md](OLD_VS_NEW.md).
+  How the training and the federation work, in plain words: [TRAINING.md](TRAINING.md).
 
 **Before merging that branch:**
 1. Run `python -m pytest -q` in the project `.venv` (with `flwr`). On the machine that built the branch `flwr`
-   was missing, so 4 tests and 2 test files could not run; everything else passes.
-2. Open the checkout page and try a queued review: the reason dropdown, note box and "Review stats" button were
-   written and tested through the API only.
+   was missing, so 4 tests and 3 test files could not run; everything else passes.
+2. Build the UI (`pnpm --dir web install && pnpm --dir web build`), start `python run_demo.py`, and try a queued
+   review in the browser. The reason and note fields are API-only: the React review panel does not send them yet.
 3. Decide `SECOND_LOOK_ON_DECLINE`. With the default (on), a very risky purchase waits for a human instead of
    being refused on the spot; `SECOND_LOOK_ON_DECLINE=0` restores the old behaviour.
 4. `specialist_weights.json` is trained offline on the IEEE-CIS verticals and committed. Regenerate it with
@@ -108,8 +108,9 @@ For the specialist models run `python -m cardguard.specialists.export` (writes `
 7. **Outcome.** Approve confirms a Stripe test-mode PaymentIntent. Step-up waits for a credentialed
    human, and so does a soft decline (a second look; a failed CVC stays a final decline). Decline voids. The
    human gives a reason from a fixed list, which is written to a tamper-evident audit. Human decisions and
-   chargebacks become labels on the node, saved to disk; "Retrain" runs a
-   federated round and a local fine-tune; a dispute agent drafts the chargeback response for a human.
+   chargebacks become labels on the node, saved to disk, and the fraud model **learns from each one at once**
+   (the reply shows this payment's model band before and after); "Retrain" also spreads it through a federated
+   round; a dispute agent drafts the chargeback response for a human.
 
 Code drives every Grid call. No model chooses a tool, sees a Grid payload, or decides alone.
 
@@ -125,8 +126,9 @@ Code drives every Grid call. No model chooses a tool, sees a Grid payload, or de
 4. **Break it.** 4000 0000 0000 0101: CVC fails, hard decline, Jev never asked. 4000 0000 0000 0002:
    agents approve, the bank declines. Attack "leak": three attempts blocked, counter stays at 0.
    Model-driven agent + an injection in the gift message: draft blocked, or altered facts logged and ignored.
-5. **Humans teach the agents.** Chargeback an approved payment, click Retrain: one federated round
-   across five nodes, the flagged pattern's band goes from low to high. "Draft dispute response".
+5. **Humans teach the agents.** Approve or decline a flagged payment, or chargeback an approved one: the model
+   updates at once and the reply shows the band before and after. Click Retrain to spread the lesson through a
+   federated round across five nodes. "Draft dispute response".
 6. **The numbers.** The per-merchant table below and the differential-privacy budget.
 
 ## Attacks we demonstrate, and where each is stopped
@@ -135,7 +137,7 @@ Code drives every Grid call. No model chooses a tool, sees a Grid payload, or de
 |---|---|---|
 | Put the card on the wire (compromised merchant) | Wire guard: closed vocabulary, Luhn scan, length cap | 3 BLOCKED ledger entries, counter stays 0 |
 | Prompt injection through customer text (buyer) | The vulnerable agent's draft is guarded, then integrity-checked against code-computed facts | Draft BLOCKED, or "altered X: ignored" |
-| Injection into the decision models (anyone) | Structural: Jev and Endeavor receive only vocabulary words; tests enumerate all 11,664 fact combinations | No path exists |
+| Injection into the decision models (anyone) | Structural: Jev and Endeavor receive only vocabulary words; tests enumerate all 559,872 fact combinations (about 4 minutes; they are most of the suite's run time) | No path exists |
 | Slow leak through allowed values (compromised merchant) | One disclosure per decision, three attempts, ten per card per hour, receiving-side Verifier | Rate-limit BLOCKED entries |
 | Forge a verdict for another merchant (hostile SuperNode) | Verdict accepted only from the node that fetched the facts; two replies for one decision go to a human | Verdict rejected |
 | Poison the network view (hostile SuperNode) | Sightings keyed by Flower's authenticated node id | Alerts name the node |
@@ -299,7 +301,7 @@ environment variables are documented in **Human in the loop: what is implemented
 | G1 | A `decline` was final: no human saw it, so "fraud" was only a weighted vote | **Done.** A soft decline is a second look in the same queue; a hard decline (CVC failed) stays final. `SECOND_LOOK_ON_DECLINE=0` restores the old behaviour. |
 | G2 | Labels lived in an in-memory list and were lost on restart | **Done.** JSONL file, reloaded at startup, capped at 2000, tolerant of a missing or corrupt file |
 | G3 | Approve/decline only: no reason, no reviewer, nothing in the audit chain | **Done.** Closed reason vocabulary, reviewer id, leak-scanned note kept on the node, hash-chained audit of every opinion and expiry |
-| G4 | Retraining manual and per node; labels usable only by the 9-feature model | **Partly.** Labels carry a `decision_id` so they can be broadcast to specialists; the broadcast and automatic retraining are not built |
+| G4 | Retraining manual and per node; labels usable only by the 9-feature model | **Mostly done.** Every human decision now teaches the fraud model instantly (see Instant learning below); Retrain still spreads it across nodes. The specialist models do not learn from labels yet; labels carry a `decision_id` for that step |
 | G5 | No visibility of human-versus-model disagreement | **Done.** `GET /review-stats`: agreement, overturn rate of soft declines, time to review, counts by reason |
 | G6 | `GET /reviews` needs no credential | **Unchanged.** It lists banded facts only; acting on a review still needs the reviewer token. Decide if that is intended. |
 
@@ -318,7 +320,7 @@ look before the demo.
 | 2 | Specialist band as an extra fact from the same node | **done** (one fact, `specialist_stack_band`) |
 | 3 | Broadcast a human label to the specialists and retrain the stack (label already carries `decision_id`) | not built |
 | 4 | True specialist nodes on the Grid: one band per node, invariant 1a reworked to accept one reply per `(decision_id, node_id)` with a quorum and abstain states | not built; larger change |
-| 5 | Run the specialists' FedAvg on real Flower SuperNodes instead of the one-process simulation | not built |
+| 5 | Train the specialists inside a Flower ServerApp/ClientApp like the original model, instead of our own one-process averaging code | not built |
 
 Rules that carry through every phase: each new band is a closed vocabulary with a test (invariant 2); models only
 ever see banded facts; the verdict stays computed in code; no card data anywhere near a specialist.
@@ -330,8 +332,9 @@ ever see banded facts; the verdict stays computed in code; no card data anywhere
 - **Slightly optimistic.** We looked at test-period results while choosing the training recipe (FedAvg + fine-tune,
   shared cutoffs). A clean figure would pick every setting on the stacker's validation slice and touch the test
   period once at the end.
-- **Simulated federation.** The specialists' FedAvg is plain numpy over five merchant slices of one dataset in one
-  process; the original model's training is the real Flower app. The maths is the same; the transport is not.
+- **Specialists are not trained inside a Flower app.** Their FedAvg is our own Python code over five merchant slices of
+  one dataset in one process; the original model's training is the real Flower app. The maths is the same; the
+  transport is not. At decision time both models take part through the Flower agent (their bands are facts on the Grid).
 - **Small merchants are noisy.** S has 183 fraud cases in its test period, R 257, H 197.
 - Wording: this narrows what any one agent sees. It does not make anything "PCI compliant".
 
@@ -401,8 +404,17 @@ persisted and fed back as a training label. Card data never appears in any of it
   decision id, timestamp. Loaded at startup (last 2000; corrupt lines are skipped).
 - **Metrics.** `GET /review-stats` (reviewer token): reviews done, queue length and oldest age,
   model-versus-human agreement (band high/medium counts as "model says fraud"), overturn rate of soft
-  declines, median seconds to review, counts by reason, audit chain status. The checkout page has a reason
-  dropdown and note box on each queued item and a "Review stats" button.
+  declines, median seconds to review, counts by reason, audit chain status. These are API endpoints: the React
+  review panel does not send a reason or note yet.
+- **Instant learning.** Every human decision (and chargeback) updates the fraud model's weights in the same
+  request. The node recomputes them from the last federated weights, a fixed sample of its own ordinary rows and
+  all its saved labels; one decision counts as `INSTANT_LABEL_SHARE` (default 0.10) of that sample. Because it is
+  recomputed rather than stacked it cannot compound, is order-independent, is re-applied from the saved labels at
+  startup, and no weight moves more than 3.0 from the federated weights. A failure to learn never blocks the human's
+  decision. Replies carry `learned`: the payment's model band before and after. `INSTANT_LEARNING=0` switches it off.
+  Measured on real data (merchant W): the sample alone changes 1.7% of bands; approving a high-risk payment moves it
+  0.58 to 0.30 (about 7% of other payments change band); declining a low-risk-looking one 0.10 to 0.32 (about 21%).
+  Labels alone, without the sample, flipped 99% of payments to high after one decline, which is why the sample is there.
 - **Two reviewers.** `TWO_REVIEWER_ABOVE_CENTS` (default 0 = off): above that amount the first approval
   is recorded as `awaiting_second` (HTTP 202) and a different `X-Reviewer-Id` must approve to complete
   it. A decline needs one reviewer.
@@ -415,7 +427,8 @@ explanations through Flower; model `Flwrlabs/endeavor-v1.0`) · `TYPESAFE_API_KE
 `MERCHANT_VERTICAL` · `STORES` · `FL_DP_NOISE`, `FL_DP_CLIP`, `FL_ROBUST` · `DEMO_CONTROLS` (set by
 run_demo: page may choose country, hour, attack, agent mode; unset = production behaviour) ·
 `SPECIALIST_WEIGHTS` (path, or `none` to switch the specialist models off) · `SECOND_LOOK_ON_DECLINE` (default 1) ·
-`TWO_REVIEWER_ABOVE_CENTS` (default 0 = off) · `LABELS_FILE`, `REVIEW_AUDIT_FILE` (default under `.demo/`).
+`TWO_REVIEWER_ABOVE_CENTS` (default 0 = off) · `LABELS_FILE`, `REVIEW_AUDIT_FILE` (default under `.demo/`) ·
+`INSTANT_LEARNING` (default 1), `INSTANT_LABEL_SHARE` (default 0.10).
 
 ## Assumptions, stated plainly
 
@@ -423,8 +436,8 @@ Stripe test mode is real Stripe with no real money. Synthetic data is used only 
 Fallbacks announce themselves: `decided_by: rules` without Jev, `by: template` without a model
 endpoint. The buyer's country is a demo control; production plugs IP geolocation into `geolocate()`.
 Rules weights (including the one for `specialist_stack_band`), band cut-offs, velocity cuts, the human-label weight
-and the ring window are hand-set. The specialists' FedAvg is plain numpy simulating the five merchants in one process
-for training (`cardguard/specialists/export.py`), not yet run on Flower SuperNodes; the original model's training is
+the ring window and the instant-learning label share are hand-set. The specialists' FedAvg is run by our own Python code over the five merchants in one
+process (`cardguard/specialists/export.py`), not yet inside a Flower app; the original model's training is
 the real Flower app. Live, one node loads its own vertical's weights.
 Several stores on one node is a demo convenience; in production one node is one merchant.
 
