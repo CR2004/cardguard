@@ -57,11 +57,13 @@ def test_cvc_failure_is_a_hard_decline_and_voids(client):
     res = buy(client, card=CVC_FAIL)
     assert res["outcome"] == "declined" and res["verdict"]["cites"] == ["cvc_check=fail"]
     assert merchant.processor.audit[-1]["event"] == "void"
+    assert [pi.status for pi in merchant.processor.sdk.intents.values()] == ["canceled"]  # held, never captured
 
 
-def test_bank_decline_after_agents_approve(client):
-    res = buy(client, card=ZERO)
-    assert res["outcome"] == "approved" and res["payment"]["status"] == "processor_declined"
+def test_bank_decline_refuses_the_hold_before_any_agent(client):
+    res = buy(client, card=ZERO)   # Stripe declines the authorization hold itself
+    assert res["outcome"] == "processor_rejected" and res["charged"] is False
+    assert client.get("/ledger").get_json()["entries"] == []
 
 
 def test_unknown_payment_method_is_refused_before_any_agent(client):

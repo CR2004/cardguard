@@ -410,8 +410,8 @@ export function applyEvent(prev: Investigation, e: TraceEvent, vocabulary: Recor
       if (s.phase !== 'review') s.phase = 'settling';
       node('tx', e.status === 'succeeded' || e.status === 'voided' ? 'complete' : 'rejected',
         e.approve ? (e.status === 'succeeded' ? 'PaymentIntent succeeded' : `Not charged: ${e.reason ?? e.status}`)
-          : 'Verification voided: nothing charged');
-      move('store', 'tx', e.approve ? 'confirm PaymentIntent' : 'void');
+          : e.status === 'void_failed' ? 'Hold not released yet: nothing charged' : 'Verification voided: nothing charged');
+      move('store', 'tx', e.approve ? 'capture PaymentIntent' : 'void');
       break;
     }
     case 'outcome': {

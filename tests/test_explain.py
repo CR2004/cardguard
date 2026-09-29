@@ -28,7 +28,7 @@ def test_template_without_endpoint(monkeypatch):
 def test_uses_endeavor_and_sends_only_verdict():
     fake = FakeEndeavor("Held for review: a large purchase from a different country than the card.")
     out = explain(V, client=fake)
-    assert out["by"] == "Flwrlabs/endeavor-v1.0" and "different country" in out["text"]
+    assert out["by"] == "flwrlabs/endeavor-1.0" and "different country" in out["text"]
     assert "tok_" not in fake.sent["input"] and "cited_signals" in fake.sent["input"]
 
 

@@ -9,7 +9,7 @@ Flow per purchase:
   merchant node -> derives banded facts -> Ledger.disclose() (wire guard)
   coordinator   -> round 2 only if the store and the bank disagree: travel_check from the bank
   coordinator   -> approve / step_up / decline                                 [banded facts only]
-  merchant node -> approve: confirm a TEST-mode PaymentIntent; step_up: human queue; decline: void
+  merchant node -> approve: capture the TEST-mode authorization hold; step_up: human queue; decline: void (cancel it)
 
 The bank attests; it never processes the payment. Stripe is the only payment rail.
 Invariant: the ledger never holds a payment-method id, a card number, or a verification id.
@@ -471,7 +471,7 @@ def _checkout(body: dict, blob: str, amount: int, hour: int, attack, store: str,
 
     # --- the payment-method id goes to Stripe; the processor answers with facts only ---
     asked = time.time()
-    _step(trace, "processor.verify.request", src="store", dst="stripe", detail="payment-method id, looked up in Stripe")
+    _step(trace, "processor.verify.request", src="store", dst="stripe", detail="payment-method id: Stripe authorizes a hold and checks the card; nothing is captured yet")
     try:
         card = processor.verify(blob, amount, MERCHANT_ID)
     except ProcessorReject as e:

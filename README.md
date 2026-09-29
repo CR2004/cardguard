@@ -62,7 +62,8 @@ Python 3.11 or 3.12, [uv](https://docs.astral.sh/uv/).
    never leaves it. The bank never sees a card and never moves money; Stripe is the only payment rail.
    The card reference is a keyed hash of Stripe's TEST card fingerprint: a demo correlation, not an
    issuer-network identity protocol.
-3. **Facts.** The merchant asks Stripe for the card's metadata and turns it, plus its own history,
+3. **Facts.** The merchant has Stripe place an authorization hold (Stripe checks the CVC only when it
+   authorizes; nothing is captured yet) and turns the answer, plus its own history,
    into eight banded facts: amount relative to its own order sizes, country mismatch, funding, CVC
    result, velocity, first sighting, and the federated model's risk band. The model scores nine raw
    local features; only its band leaves the node.
@@ -81,8 +82,8 @@ Python 3.11 or 3.12, [uv](https://docs.astral.sh/uv/).
    its private history locally and returns only `travel_check` (plausible / implausible / unknown).
    `implausible` puts a person in the loop and never declines on its own; the model never sees it; a
    round 2 with no verified answer holds the payment for a person.
-7. **Outcome.** Approve confirms a Stripe test-mode PaymentIntent. Step-up waits for a credentialed
-   human. Decline voids. Human decisions and chargebacks become labels on the node; "Retrain" runs a
+7. **Outcome.** Approve captures the Stripe test-mode authorization hold that verification placed (Stripe
+   checks the CVC only when it authorizes). Step-up waits for a credentialed human. Decline cancels the hold. Human decisions and chargebacks become labels on the node; "Retrain" runs a
    federated round and a local fine-tune; a dispute agent drafts the chargeback response for a human.
 
 Code drives every Grid call. No model chooses a tool, sees a Grid payload, or decides alone.
@@ -96,7 +97,7 @@ Code drives every Grid call. No model chooses a tool, sees a Grid payload, or de
 3. **Fraud ring.** The same card at store-a, store-b, store-c within minutes: two clean approvals, then
    the coordinator's network view turns the third red and alerts all three stores.
 4. **Break it.** 4000 0000 0000 0101: CVC fails, hard decline, Jev never asked. 4000 0000 0000 0002:
-   agents approve, the bank declines. Attack "leak": three attempts blocked, counter stays at 0.
+   Stripe refuses the authorization hold before any agent runs; nothing is charged. Attack "leak": three attempts blocked, counter stays at 0.
    Model-driven agent + an injection in the gift message: draft blocked, or altered facts logged and ignored.
 5. **Humans teach the agents.** Chargeback an approved payment, click Retrain: one federated round
    across five nodes, the flagged pattern's band goes from low to high. "Draft dispute response".
@@ -158,7 +159,7 @@ available (`FL_DP_NOISE=1.0`): epsilon about 40 at delta 1e-5 over 30 rounds, co
 ## Environment (.env, see .env.example)
 
 `STRIPE_SECRET_KEY`, `STRIPE_PUBLISHABLE_KEY` (test keys, required) · `FLWR_MODEL_API_KEY` (live
-explanations through Flower; model `Flwrlabs/endeavor-v1.0`) · `TYPESAFE_API_KEY` (Jev) ·
+explanations through Flower; model `flwrlabs/endeavor-1.0`) · `TYPESAFE_API_KEY` (Jev) ·
 `LLM_BASE_URL/LLM_API_KEY/LLM_MODEL` (direct calls for the injection demo and dispute drafts) ·
 `MERCHANT_VERTICAL` · `STORES` · `FL_DP_NOISE`, `FL_DP_CLIP`, `FL_ROBUST` · `DEMO_CONTROLS` (set by
 run_demo: page may choose country, hour, attack, agent mode; unset = production behaviour).

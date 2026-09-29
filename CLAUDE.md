@@ -109,7 +109,7 @@ user_prompt via StartRunRequest exactly like `flwr chat` does. The SuperLink spa
 - TYPESAFE_API_KEY (Jev), optional JEV_MODEL to pin a version
 - Endeavor: FLWR_RUNTIME_BASE_URL / FLWR_RUNTIME_API_KEY are injected inside an AgentApp;
   elsewhere ENDEAVOR_BASE_URL / ENDEAVOR_API_KEY. ENDEAVOR_MODEL defaults to
-  `Flwrlabs/endeavor-v1.0` (confirmed Sep 29: the model to call with the Flower API key).
+  `flwrlabs/endeavor-1.0` (verified live Sep 29: the id api.flower.ai/v1/models lists; `Flwrlabs/endeavor-v1.0` is rejected).
 - STORES=store-a,store-b,store-c: one merchant node fronting several stores (fraud-ring demo).
 - FL_DP_NOISE / FL_DP_CLIP: differential privacy on flower_app training (0 = off).
 - REVIEWER_TOKEN: credential for human actions on the merchant node (review, chargeback, evidence,
@@ -125,7 +125,7 @@ user_prompt via StartRunRequest exactly like `flwr chat` does. The SuperLink spa
   them; the bank process never receives the Stripe keys or the reviewer token.
 - .env at the repo root is loaded by run_demo.py and scripts/run_super*.py (cardguard/dotenv.py); .env.example lists everything.
 - LLM_BASE_URL / LLM_API_KEY / LLM_MODEL only for the live injection demo.
-- Flower-served models: FLWR_MODEL_API_KEY (flower.ai Profile -> Settings -> API Keys); model `Flwrlabs/endeavor-v1.0`.
+- Flower-served models: FLWR_MODEL_API_KEY (flower.ai Profile -> Settings -> API Keys); model `flwrlabs/endeavor-1.0`.
 
 ## Flower facts (verified against flwr 1.39.0 locally; see the installed source, not memory)
 - Training: `from flwr.app import ArrayRecord, Context, Message, MetricRecord, RecordDict`,
@@ -169,7 +169,9 @@ Done: see README "Status for the team". Accuracy claims were corrected on Sep 29
 NOT beat lone merchants on their own data for large verticals; FedAvg + local training never loses
 and helps small merchants (<~1,000 rows). Never say "federated beats any merchant". The ring
 detection is not validated by IEEE-CIS (69 cross-vertical sightings in 590k rows).
-Not yet run against real services: Jev, Endeavor / Flower-served models, Stripe, SuperGrid.
+Run against real services on Sep 29: Stripe TEST (manual-capture holds), Jev, Endeavor via api.flower.ai
+(`flwrlabs/endeavor-1.0`; upstream often 502s, the template covers it), local Flower SuperLink/SuperNode.
+Not yet: SuperGrid (needs an interactive `flwr login supergrid`).
 Left: commit + push; `flwr login supergrid` + SuperGrid run (needs a SuperNode we control);
 FLWR_MODEL_API_KEY / TYPESAFE_API_KEY / Stripe test keys; ship personalisation at merchant startup;
 dispute draft + injection demo through a Flower task; UI pass; Hub publish; video; pitch.
