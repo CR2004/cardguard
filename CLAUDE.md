@@ -141,6 +141,16 @@ user_prompt via StartRunRequest exactly like `flwr chat` does. The SuperLink spa
   `flwr log <run-id> supergrid --show`. Local: `flower-superlink --insecure`, `~/.flwr/config.toml`
   `[superlink.local-agent] address="127.0.0.1:8000" insecure=true`, `flwr run . local-agent`.
 - Each SuperGrid task times out 5 minutes after it starts Running. One decision per task.
+- SuperGrid, verified live Sep 29 (flwr 1.39 CLI, SuperGrid runtime flwr 1.40 on Python 3.13, so
+  requires-python must allow 3.13): `~/.flwr/config.toml` `[superlink.supergrid] address="api.flower.ai"
+  federation="@ac007/cardguard"` (the launcher sends `conn.federation`); `flwr login supergrid`.
+  SuperNode: `ssh-keygen -t ecdsa -b 384 -N "" -f ~/supernodes_keys/cardguard-store`,
+  `flwr supernode register <pub> supergrid --name cardguard-store`, `flwr federation create cardguard supergrid`
+  (add-supernode to @ac007/personal is refused, code 10), `flwr federation add-supernode <id> @ac007/cardguard supergrid`,
+  `flower-supernode --superlink fleet-supergrid.flower.ai:443 --auth-supernode-private-key ~/supernodes_keys/cardguard-store`
+  (node 14493107910137511207; the merchant node on :4242 must be up on the same laptop). A decision took
+  ~190 s end to end (task scheduling + per-run env), the Grid exchange itself ~7 s; merchant GRID_TIMEOUT is 240 s.
+  `python run_demo.py --federation supergrid` selects it. Runs: `flwr list supergrid`, `flwr log <run-id> supergrid --show`.
 - Run series: launch.py stores the series id in .demo/series_<superlink>.txt and passes it to
   StartRunRequest, so the coordinator's context.state (the network table) persists across decisions.
   Verified live: three stores, three runs, third purchase flagged with an alert naming all three.
