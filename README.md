@@ -318,7 +318,7 @@ look before the demo.
 | 2 | Specialist band as an extra fact from the same node | **done** (one fact, `specialist_stack_band`) |
 | 3 | Broadcast a human label to the specialists and retrain the stack (label already carries `decision_id`) | not built |
 | 4 | True specialist nodes on the Grid: one band per node, invariant 1a reworked to accept one reply per `(decision_id, node_id)` with a quorum and abstain states | not built; larger change |
-| 5 | Run the specialists' FedAvg on real Flower SuperNodes instead of the one-process simulation | not built |
+| 5 | Train the specialists inside a Flower ServerApp/ClientApp like the original model, instead of our own one-process averaging code | not built |
 
 Rules that carry through every phase: each new band is a closed vocabulary with a test (invariant 2); models only
 ever see banded facts; the verdict stays computed in code; no card data anywhere near a specialist.
@@ -330,8 +330,9 @@ ever see banded facts; the verdict stays computed in code; no card data anywhere
 - **Slightly optimistic.** We looked at test-period results while choosing the training recipe (FedAvg + fine-tune,
   shared cutoffs). A clean figure would pick every setting on the stacker's validation slice and touch the test
   period once at the end.
-- **Simulated federation.** The specialists' FedAvg is plain numpy over five merchant slices of one dataset in one
-  process; the original model's training is the real Flower app. The maths is the same; the transport is not.
+- **Specialists are not trained inside a Flower app.** Their FedAvg is our own Python code over five merchant slices of
+  one dataset in one process; the original model's training is the real Flower app. The maths is the same; the
+  transport is not. At decision time both models take part through the Flower agent (their bands are facts on the Grid).
 - **Small merchants are noisy.** S has 183 fraud cases in its test period, R 257, H 197.
 - Wording: this narrows what any one agent sees. It does not make anything "PCI compliant".
 
@@ -423,8 +424,8 @@ Stripe test mode is real Stripe with no real money. Synthetic data is used only 
 Fallbacks announce themselves: `decided_by: rules` without Jev, `by: template` without a model
 endpoint. The buyer's country is a demo control; production plugs IP geolocation into `geolocate()`.
 Rules weights (including the one for `specialist_stack_band`), band cut-offs, velocity cuts, the human-label weight
-and the ring window are hand-set. The specialists' FedAvg is plain numpy simulating the five merchants in one process
-for training (`cardguard/specialists/export.py`), not yet run on Flower SuperNodes; the original model's training is
+and the ring window are hand-set. The specialists' FedAvg is run by our own Python code over the five merchants in one
+process (`cardguard/specialists/export.py`), not yet inside a Flower app; the original model's training is
 the real Flower app. Live, one node loads its own vertical's weights.
 Several stores on one node is a demo convenience; in production one node is one merchant.
 

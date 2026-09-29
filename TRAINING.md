@@ -31,7 +31,7 @@ averaged. That is federated learning. No transaction row ever leaves a merchant.
 | Sends to the coordinator | one band, `model_risk_band` | one band, `specialist_stack_band` |
 | Saved as | `fl_weights.json` (10 numbers) | `specialist_weights.json` (about 6 KB) |
 | Trained by | `python -m cardguard.training.flower_app` | `python -m cardguard.specialists.export` |
-| Federation | a real Flower app, one SuperNode per merchant | plain numpy simulating the five merchants |
+| Training run | a Flower app (ServerApp + ClientApp), one simulated SuperNode per merchant | our own Python code running the same averaging steps, not yet inside a Flower app |
 
 Logistic regression is just `score = bias + weight1 x feature1 + ...`, squashed into a 0-to-1 fraud probability. A
 model that is only a list of numbers can be averaged, and its files are tiny.
@@ -100,12 +100,31 @@ counting as much as 50 ordinary rows, and then a short fine-tune on that merchan
   version helps the small merchants most (merchant S: 0.525 against 0.381 for the original model).
 - Overall, the specialists are level with the original model (0.774 against 0.768). Details are in the README.
 
-## What is real Flower and what is simulated
+## Where the Flower agent comes in
 
-- **Real:** the original model's training is a Flower ServerApp and ClientApp, run locally with one simulated
-  SuperNode per merchant. The decision path (coordinator and merchant agents over Grid) is separate and also Flower.
-- **Simulated:** the specialists' averaging is plain numpy in one process. The maths is the same, but it is not yet
-  run on Flower SuperNodes.
+Flower shows up in two separate places, and it helps to keep them apart.
+
+**1. Making each decision (both models).** This is the Flower agent.
+
+```
+merchant node          SuperNode (merchant agent)          SuperLink (coordinator agent)
+ builds the banded  --> fetches the guarded facts   --Grid--> asks a purpose-tagged question,
+ facts, incl. both      from its own node                     re-checks the reply, runs the rules
+ model_risk_band and    and replies with them                 and Jev's vote in code, emits the verdict
+ specialist_stack_band
+```
+
+Both models take part the same way: each one's band is just a fact in the reply. Only banded, allowlisted values
+travel, and the coordinator accepts a verdict only from the node that supplied the facts. (The Flower path could not
+be run on the machine that built the specialists because `flwr` was not installed there; the same facts are covered
+by the in-process tests, and by reading the code they take the same route. Please run it once with `flwr`.)
+
+**2. Training the models.**
+- **Original model:** a real Flower ServerApp and ClientApp, run locally with one simulated SuperNode per merchant.
+- **Specialists:** trained by our own Python code that performs the same FedAvg steps over the five merchant slices,
+  one process, one machine. The maths is the same, but it is not yet inside a Flower app. Moving it there is a
+  moderate change: the per-merchant training step stays as it is, and the fine-tune becomes a second, client-side
+  step after the global rounds.
 
 ## Where things live
 
