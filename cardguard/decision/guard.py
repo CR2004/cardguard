@@ -26,6 +26,10 @@ WIRE_SCHEMA: dict[str, set[str]] = {
     "model_risk_band": {"low", "medium", "high"},
     "network_velocity_band": {"low", "medium", "high"},  # set by the coordinator: same card at 1 / 2 / 3+ merchants in 10 min
     "specialist_stack_band": {"low", "medium", "high"},  # four one-signal-family models (FedAvg across merchants), stacked
+    # the bank's attestations: round 1 about the cardholder, round 2 about travel (never a place or a time)
+    "issuer_behavior": {"low", "medium", "high", "unknown"},
+    "issuer_recent_declines": {"none", "some", "many", "unknown"},
+    "travel_check": {"plausible", "implausible", "unknown"},
 }
 TOKEN_RE = re.compile(r"^tok_[a-p]{16}$")  # letters only: can never resemble a card number
 HEX_TO_LETTERS = str.maketrans("0123456789abcdef", "abcdefghijklmnop")  # for every letters-only id we mint

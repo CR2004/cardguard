@@ -4,10 +4,14 @@ Flow per purchase:
   checkout page -> Stripe Elements sends the card to Stripe; the store receives a payment-method id
   merchant node -> asks Stripe (test mode) for card facts by that id
   processor     -> {verification_id, card_ref, country, funding, cvc_check}   [no card data]
+  merchant node -> asks the bank attestation node about the card_ref (round 1, signed channel)
+  bank          -> {issuer_behavior, issuer_recent_declines}                   [bands only]
   merchant node -> derives banded facts -> Ledger.disclose() (wire guard)
+  coordinator   -> round 2 only if the store and the bank disagree: travel_check from the bank
   coordinator   -> approve / step_up / decline                                 [banded facts only]
   merchant node -> approve: confirm a TEST-mode PaymentIntent; step_up: human queue; decline: void
 
+The bank attests; it never processes the payment. Stripe is the only payment rail.
 Invariant: the ledger never holds a payment-method id, a card number, or a verification id.
 """
 from __future__ import annotations
@@ -25,13 +29,15 @@ import numpy as np
 from cardguard.payment_processing import agent_llm
 from cardguard.training import fl
 from cardguard.data import ieee_cis as fl_data
-from cardguard.decision.coordinator import decide
+from cardguard.decision.coordinator import TRAVEL_PURPOSE, decide, hold_unanswered, needs_travel_check
 from cardguard.decision.explain import explain
 from cardguard import ROOT
 from cardguard.decision import audit
 from cardguard.decision import network as net
-from cardguard.decision.guard import Ledger, WireViolation, strip_for_wire
+from cardguard.decision.guard import WIRE_SCHEMA, Ledger, WireViolation, strip_for_wire
+from cardguard.bank.client import BankClient, region_of
 from cardguard.payment_processing import review_store
+from cardguard.payment_processing import trace as tr
 from cardguard.payment_processing.errors import ProcessorReject
 from cardguard.specialists import live as spec_live
 
@@ -43,8 +49,6 @@ STORES = [s.strip() for s in os.environ.get("STORES", MERCHANT_ID).split(",") if
 FEDERATION = os.environ.get("CARDGUARD_FEDERATION", "")
 GRID_TIMEOUT = 240  # seconds to wait for the coordinator AgentApp's verdict (task budget is 300)
 REVIEWER_TOKEN = os.environ.get("REVIEWER_TOKEN", "")     # the human reviewer's credential (review, dispute, retrain, join)
-MAX_AMOUNT_CENTS = 10_000_000                             # $100,000: anything above is not a checkout
-CHECKOUT_RATE_PER_MINUTE = int(os.environ.get("CHECKOUT_RATE_PER_MINUTE", "30"))  # per client address
 # Demo controls let the page choose the buyer's country, the hour, and the model-driven agent mode.
 # In production these are derived server-side (IP geolocation, the clock) and the agent mode is off.
 DEMO_CONTROLS = os.environ.get("DEMO_CONTROLS", "0") == "1"
@@ -54,11 +58,17 @@ TWO_REVIEWER_ABOVE_CENTS = int(os.environ.get("TWO_REVIEWER_ABOVE_CENTS", "0")) 
 LABELS_FILE = os.environ.get("LABELS_FILE", str(ROOT / ".demo" / "labels.jsonl"))
 REVIEW_AUDIT_FILE = os.environ.get("REVIEW_AUDIT_FILE", str(ROOT / ".demo" / "review_audit.jsonl"))
 ALLOWED_HOSTS = {h.strip() for h in os.environ.get("MERCHANT_HOSTS", "127.0.0.1:4242,localhost:4242,127.0.0.1,localhost").split(",")}
+MAX_AMOUNT_CENTS = 10_000_000                             # $100,000: anything above is not a checkout
+CHECKOUT_RATE_PER_MINUTE = int(os.environ.get("CHECKOUT_RATE_PER_MINUTE", "30"))  # per client address
+
 
 # The processor: Stripe in TEST mode (live keys are refused). Tests inject one with a faked SDK.
 from cardguard.payment_processing.stripe_processor import StripeProcessor  # noqa: E402
 
 processor = StripeProcessor(os.environ.get("STRIPE_SECRET_KEY", ""), os.environ.get("STRIPE_PUBLISHABLE_KEY", ""))
+# The bank attestation node (BANK_URL, signed with BANK_SECRET). Unset = no bank: its facts are "unknown".
+bank = BankClient.from_env(MERCHANT_ID)
+BANK_FACTS = {"issuer_behavior", "issuer_recent_declines"}
 
 
 class MerchantLedger(Ledger):
@@ -89,7 +99,9 @@ class MerchantLedger(Ledger):
             self._blocked(source, purpose, "already disclosed for this decision", note)
         if self.attempts[key] > self.MAX_ATTEMPTS:
             self._blocked(source, purpose, "too many attempts for this decision", note)
-        token = str(payload.get("token"))
+        # A fact with no card reference (round 2) has no card to count: it is still one per decision,
+        # and only ever follows a round-1 disclosure that the per-card limit did count.
+        token = str(payload["token"]) if "token" in payload else None
         now = time.time()
         if len(self.attempts) > 10000:  # decisions are short-lived: forget bookkeeping older than an hour
             self.attempts = {k: v for k, v in self.attempts.items() if now - self.first_seen.get(k, now) < 3600}
@@ -97,9 +109,10 @@ class MerchantLedger(Ledger):
             self.first_seen = {k: t for k, t in self.first_seen.items() if k in self.attempts}
             self.by_token = collections.defaultdict(list, {k: v for k, v in self.by_token.items() if v and now - v[-1] < 3600})
         self.first_seen.setdefault(key, now)
-        self.by_token[token] = [t for t in self.by_token[token] if now - t < 3600]
-        if len(self.by_token[token]) >= self.MAX_PER_TOKEN_PER_HOUR:
-            self._blocked(source, purpose, "token rate limit", note)
+        if token is not None:
+            self.by_token[token] = [t for t in self.by_token[token] if now - t < 3600]
+            if len(self.by_token[token]) >= self.MAX_PER_TOKEN_PER_HOUR:
+                self._blocked(source, purpose, "token rate limit", note)
         try:
             clean = super().disclose(source, purpose, payload)
         finally:
@@ -107,7 +120,8 @@ class MerchantLedger(Ledger):
                 self.entries[-1]["note"] = note
                 audit.reseal(self.entries[-1])
         self.disclosed.add(key)
-        self.by_token[token].append(now)
+        if token is not None:
+            self.by_token[token].append(now)
         return clean
 
 
@@ -210,7 +224,6 @@ def _rate_limited(addr: str) -> bool:
     if len(_checkout_calls) > 10000:
         _checkout_calls.clear()
     return len(recent) >= CHECKOUT_RATE_PER_MINUTE
-HERE = os.path.dirname(os.path.abspath(__file__))
 ledger = MerchantLedger()
 pending: dict[str, dict] = {}       # review id -> {verification_id, amount, facts, verdict}; vid stays here
 pending_decisions: dict[str, dict] = {}  # decision id -> {payload, note, facts}: what the merchant agent may disclose
@@ -224,6 +237,8 @@ retrain_log: list[dict] = []
 seen: dict[str, list[float]] = {}   # card_ref -> purchase timestamps (24h window)
 card_first_seen: dict[str, float] = {}
 card_last_seen: dict[str, float] = {}
+traces = tr.TraceStore()                 # live investigation steps per checkout, for the page (display only)
+CONFLICT = "store: the buyer is outside the card's country; bank: an ordinary cardholder, card checks pass"
 
 
 def band(value, cuts, names=("low", "medium", "high")):
@@ -235,7 +250,17 @@ def run_grid_decision(decision_id: str) -> dict | None:
     The coordinator asks this node's merchant agent over Grid; the agent calls /agent/facts here."""
     from cardguard.agentapp.launch import decide_over_flower
     overrides = ("agent.trust-declared-stores=true",) if len(STORES) > 1 else ()  # the multi-store demo
-    return decide_over_flower(FEDERATION, decision_id, timeout=GRID_TIMEOUT, overrides=overrides)
+    trace = traces.for_decision(decision_id)
+    live = [True]  # a run that outlives the checkout's wait never writes into its story
+
+    def sink(kind: str, payload: dict) -> None:
+        if trace is not None and live[0]:
+            tr.record_flower_event(trace, kind, payload)
+
+    try:
+        return decide_over_flower(FEDERATION, decision_id, timeout=GRID_TIMEOUT, overrides=overrides, on_event=sink)
+    finally:
+        live[0] = False
 
 
 def local_only() -> bool:
@@ -259,12 +284,38 @@ def agent_facts():
     entry = pending_decisions.get(wanted)
     if entry is None:
         return jsonify({"error": "unknown decision"})
-    entry["node_id"] = str(body.get("node_id", ""))  # the SuperNode that fetched the facts: only its verdict counts
+    node_id = str(body.get("node_id", ""))
+    trace = traces.for_decision(wanted)
+    if purpose == TRAVEL_PURPOSE:  # round 2: after round 1, and only for the node that answered it
+        if entry["facts"] is None or not node_id or node_id != entry.get("node_id") or not entry.get("card_region"):
+            return jsonify({"error": "round 2 follows round 1 from the same node"})
+        if not needs_travel_check(entry["facts"]):  # this node enforces the trigger too, not only the coordinator
+            return jsonify({"error": "round 2 is not called for"})
+        if trace:
+            trace.add("node.read", src="store", node=node_id, round=2, status="relayed",
+                      detail="the store's SuperNode passes the question to the bank over the signed channel")
+        try:
+            facts = travel_round(wanted, entry["payload"]["token"], entry["card_region"], entry["buyer_region"],
+                                 "merchant-agent", entry["note"], trace)
+        except WireViolation as e:
+            return jsonify({"error": str(e)})
+        if not facts:
+            return jsonify({"error": "the bank did not answer"})
+        entry["travel_check"] = facts["travel_check"]  # kept, so an in-process fallback decides on it too
+        return jsonify({"decision_id": wanted, "purpose": purpose, "facts": facts,
+                        "merchant_id": entry.get("merchant_id", MERCHANT_ID)})
     try:
         entry["facts"] = ledger.disclose("merchant-agent", purpose, entry["payload"], note=entry["note"],
                                          decision_id=wanted)
     except WireViolation as e:
+        if trace:
+            trace.add("node.read", src="store", node=node_id, status="blocked", reason=str(e))
         return jsonify({"error": str(e)})
+    entry["node_id"] = node_id  # the SuperNode that fetched the facts: only its verdict counts (a refused
+    # replay from another node never rebinds it)
+    if trace:
+        trace.add("node.read", src="store", node=entry["node_id"], status="disclosed",
+                  detail="the store's SuperNode read this decision's guarded facts from its own node")
     return jsonify({"decision_id": wanted, "purpose": purpose, "facts": entry["facts"],
                     "merchant_id": entry.get("merchant_id", MERCHANT_ID)})
 
@@ -273,6 +324,40 @@ def geolocate(addr: str | None) -> str:
     """Country of the buyer's address. Production plugs a geolocation database in here; without one,
     the merchant reports its own country, which makes country_mismatch a conservative 'no'."""
     return os.environ.get("MERCHANT_COUNTRY", "US")
+
+
+def ask_bank(card_ref: str, card_region: str, trace) -> dict:
+    """Round 1 bank evidence over the signed channel: the bank's bands about the cardholder. The store
+    sends a pseudonymous card reference and the card's coarse issuing region, nothing else. No bank,
+    or no answer, is "unknown" (the bank is not a hard dependency; Stripe is)."""
+    if bank is None:  # no bank configured: no bank facts, and so no round 2
+        return {}
+    _step(trace, "bank.attest.request", src="store", dst="bank", detail="pseudonymous card reference and issuing region")
+    asked = time.time()
+    out = bank.attest(card_ref, card_region)
+    facts = {k: str((out or {}).get(k, "unknown")) for k in sorted(BANK_FACTS)}
+    facts = {k: v if v in WIRE_SCHEMA[k] else "unknown" for k, v in facts.items()}
+    _step(trace, "bank.attest.reply", src="bank", dst="store", status="ok" if out else "unavailable",
+          latency_ms=_ms(asked), evidence=facts)
+    return facts
+
+
+def travel_round(decision_id: str, card_ref: str, card_region: str, buyer_region: str, source: str, note: dict,
+                 trace) -> dict:
+    """Round 2 on this node: the bank answers over the signed channel from history it keeps, and only
+    the guarded band crosses. The store tells the bank regions, never more. No answer is {}: the caller
+    then holds the payment for a person (never an automatic approve)."""
+    _step(trace, "bank.travel.request", src="store", dst="bank", round=2,
+          detail="signed question: card reference, issuing region, buyer region")
+    asked = time.time()
+    out = bank.travel_check(card_ref, card_region, buyer_region, decision_id) if bank else None
+    answer = (out or {}).get("travel_check")
+    if answer not in WIRE_SCHEMA["travel_check"]:
+        _step(trace, "bank.travel.reply", src="bank", dst="store", round=2, status="unavailable", latency_ms=_ms(asked))
+        return {}
+    _step(trace, "bank.travel.reply", src="bank", dst="store", round=2, status="ok", latency_ms=_ms(asked),
+          evidence={"travel_check": answer})
+    return ledger.disclose(source, TRAVEL_PURPOSE, {"travel_check": answer}, note=note, decision_id=decision_id)
 
 
 def buyer_reason(e: ProcessorReject, attack: str | None) -> str:
@@ -329,17 +414,29 @@ def settle(vid: str, amount_cents: int, approve: bool) -> dict:
     return result
 
 
+WEB_DIST = ROOT / "web" / "dist"  # the investigation UI: `pnpm --dir web build`
+
+
 @app.get("/")
 def index():
-    return send_from_directory(HERE, "checkout.html")
+    if not (WEB_DIST / "index.html").exists():
+        return ("The UI is not built yet: run `pnpm --dir web install && pnpm --dir web build`, then reload.",
+                503, {"Content-Type": "text/plain; charset=utf-8"})
+    return send_from_directory(WEB_DIST, "index.html")
+
+
+@app.get("/assets/<path:name>")
+def assets(name):
+    return send_from_directory(WEB_DIST / "assets", name)
 
 
 @app.get("/config")
 def config():
     (p10, p50, p90), basis = baseline.cuts()
     return jsonify({"merchant_id": MERCHANT_ID, "vertical": VERTICAL,
-                    "federation": FEDERATION or None, "stores": STORES,
-                    "publishable_key": processor.publishable_key,
+                    "federation": FEDERATION or None, "stores": STORES, "bank_attestation": bank is not None,
+                    "publishable_key": processor.publishable_key, "demo_controls": DEMO_CONTROLS,
+                    "wire_vocabulary": {k: sorted(v) for k, v in WIRE_SCHEMA.items() if v},  # the closed vocabulary
                     "amount_cuts": {"medium_from": p50, "high_from": p90, "basis": basis}})
 
 
@@ -364,13 +461,49 @@ def checkout():
     if store not in STORES:
         return jsonify({"error": "unknown store"}), 400
     decision_id = secrets.token_hex(8)  # one disclosure per decision, enforced by the ledger
+    trace = traces.open(body.get("trace_id"))
+    try:
+        return _checkout(body, blob, amount, hour, attack, store, decision_id, trace)
+    finally:
+        if trace:
+            trace.done = True
+
+
+def _step(trace: tr.Trace | None, kind: str, **fields) -> None:
+    if trace is not None:
+        trace.add(kind, **fields)
+
+
+def _ms(since: float) -> int:
+    return round((time.time() - since) * 1000)
+
+
+def _settled(trace, payment: dict, approve: bool) -> None:
+    _step(trace, "payment.settled", src="store", dst="stripe", processor="stripe", approve=approve,
+          status=str(payment.get("status", "?")), auth_code=payment.get("auth_code"), reason=payment.get("reason"))
+
+
+def _checkout(body: dict, blob: str, amount: int, hour: int, attack, store: str, decision_id: str, trace):
+    buyer_country = str(body.get("buyer_country", "US"))
+    _step(trace, "payment.started", src="buyer", dst="store", amount_cents=amount, store=store,
+          processor="stripe", federation=FEDERATION or None, attack=attack, bytes=len(blob))
 
     # --- the payment-method id goes to Stripe; the processor answers with facts only ---
+    asked = time.time()
+    _step(trace, "processor.verify.request", src="store", dst="stripe", detail="payment-method id, looked up in Stripe")
     try:
         card = processor.verify(blob, amount, MERCHANT_ID)
     except ProcessorReject as e:
+        _step(trace, "processor.verify.reply", src="stripe", dst="store", status="rejected",
+              reason=buyer_reason(e, attack), latency_ms=_ms(asked))
+        _step(trace, "outcome", outcome="processor_rejected", charged=False)
         return jsonify({"outcome": "processor_rejected", "reason": buyer_reason(e, attack), "attack": attack, "charged": False})
     vid = card["verification_id"]
+    _step(trace, "processor.verify.reply", src="stripe", dst="store", status="ok", latency_ms=_ms(asked),
+          evidence={"cvc_check": card["cvc_check"] if card["cvc_check"] in {"pass", "fail"} else "unavailable",
+                    "card_funding": card["funding"] if card["funding"] in {"credit", "debit", "prepaid"} else "unknown"})
+    card_region = region_of(card.get("country", ""))
+    bank_facts = ask_bank(card["card_ref"], card_region, trace)
 
     now = time.time()
     ref = card["card_ref"]  # letters-only keyed hash of Stripe's card fingerprint: the wire token
@@ -395,6 +528,7 @@ def checkout():
         "cvc_check": card["cvc_check"] if card["cvc_check"] in {"pass", "fail"} else "unavailable",
         "velocity_band": band(len(hits), (2, 5)),
         "new_customer": "yes" if first_time else "no",
+        **bank_facts,
     }
     # Federated model scores raw local features here; only the band crosses the wire.
     features = np.array([[dollars > p90, dollars < p10, payload["country_mismatch"] == "yes",
@@ -413,6 +547,9 @@ def checkout():
         payload["specialist_stack_band"] = scored["stack_band"]
         note.update({f"specialist_{k}": v for k, v in scored["bands"].items()})
     card_history.record(key, dollars, hour)
+    _step(trace, "store.facts", src="store", evidence={k: v for k, v in payload.items() if tr.PARTY_OF.get(k) == "store"},
+          private={"buyer_region": region_of(buyer_country), "card_region": card_region,
+                   "purchases_here_24h": len(hits)})
 
     agent_info = None
     if body.get("model_agent"):
@@ -421,7 +558,8 @@ def checkout():
         # and any field that differs from the code-computed facts is an integrity failure.
         draft = agent_llm.compose({k: v for k, v in payload.items() if k != "token"}, str(body.get("gift_message", ""))[:500])
         if draft is None:
-            settle(vid, amount, approve=False)
+            _settled(trace, settle(vid, amount, approve=False), approve=False)
+            _step(trace, "outcome", outcome="no_model_endpoint", charged=False)
             return jsonify({"outcome": "no_model_endpoint", "charged": False,
                             "hint": "set LLM_BASE_URL + LLM_API_KEY (or the Endeavor / Flower runtime vars)"})
         agent_info = {"model": draft["model"], "raw_leaks": agent_llm.leaks_in_raw(draft["raw"]),
@@ -444,8 +582,11 @@ def checkout():
             except WireViolation:
                 pass
             agent_info["blocked"] = reason
+            _step(trace, "guard.blocked", src="store", dst="coordinator", status="rejected", reason=reason,
+                  detail="the model-driven store agent's draft", tampered=bool(tampered))
             if not tampered:  # a leak, injection or garbage: stop here, nothing is charged
-                settle(vid, amount, approve=False)
+                _settled(trace, settle(vid, amount, approve=False), approve=False)
+                _step(trace, "outcome", outcome="blocked", charged=False)
                 return jsonify({"outcome": "blocked", "agent": agent_info, "charged": False})
             agent_info["tampered"] = tampered  # altered facts: logged, ignored, code facts continue
 
@@ -461,24 +602,38 @@ def checkout():
                 ledger.disclose("merchant", "fraud-risk", a, note=note, decision_id=decision_id)
             except WireViolation as e:
                 blocked.append(str(e))
-        settle(vid, amount, approve=False)
+                _step(trace, "guard.blocked", src="store", dst="coordinator", status="rejected", reason=str(e),
+                      detail="compromised store agent tries to put card data on the wire")
+        _settled(trace, settle(vid, amount, approve=False), approve=False)
+        _step(trace, "outcome", outcome="blocked", charged=False)
         return jsonify({"outcome": "blocked", "blocked": blocked, "attack": attack, "charged": False})
 
     verdict = None
+    known_travel = None  # the bank's round-2 answer, when a Flower run already asked it
+    unanswered = False
     if FEDERATION:
         # The decision runs as Flower AgentApps: the coordinator asks this node's merchant agent
         # over Grid, and that agent discloses through /agent/facts. Nothing else leaves this node.
-        pending_decisions[decision_id] = {"payload": payload, "note": note, "facts": None, "merchant_id": store, "t": time.time()}
+        pending_decisions[decision_id] = {"payload": payload, "note": note, "facts": None, "merchant_id": store, "t": time.time(),
+                                          "card_region": card_region, "buyer_region": region_of(buyer_country)}
+        traces.bind(decision_id, trace)
+        _step(trace, "flower.run.request", src="store", dst="coordinator", federation=FEDERATION)
         verdict = run_grid_decision(decision_id)
         entry = pending_decisions.pop(decision_id)
+        known_travel = entry.get("travel_check")
         if verdict is not None and not verdict_is_ours(verdict, decision_id, entry):
             note["grid"] = "verdict was not for this decision or not from our own node; ignored"
+            _step(trace, "verdict.received", src="coordinator", dst="store", status="ignored",
+                  reason="not for this decision, or not from the node that read our facts")
             verdict = None
         if verdict is not None and entry["facts"] is not None:
             facts = entry["facts"]
             verdict["decided_via"] = f"flower:{FEDERATION}"
+            _step(trace, "verdict.received", src="coordinator", dst="store", status="accepted", node=entry.get("node_id"),
+                  detail="bound to the SuperNode that read our facts")
         else:
             note["grid"] = "no verdict from the federation; decided in-process"
+            _step(trace, "fallback", detail="no verdict from the federation: decided on this node instead")
             verdict = None
             facts = entry["facts"]
     if verdict is None:
@@ -486,16 +641,40 @@ def checkout():
             try:
                 facts = ledger.disclose("merchant", "fraud-risk", payload, note=note, decision_id=decision_id)
             except WireViolation as e:  # e.g. the token rate limit: nothing crosses, nothing is charged
-                settle(vid, amount, approve=False)
+                _step(trace, "guard.blocked", src="store", dst="coordinator", status="rejected", reason=str(e))
+                _settled(trace, settle(vid, amount, approve=False), approve=False)
+                _step(trace, "outcome", outcome="blocked", charged=False)
                 return jsonify({"outcome": "blocked", "blocked": [str(e)], "charged": False})
+            _step(trace, "store.disclosed", src="store", dst="coordinator", status="verified",
+                  evidence={k: v for k, v in facts.items() if k != "token"}, detail="in-process: no Flower run")
         net_band, merchants = net.NETWORK.observe(facts["token"], store)  # in-process network view
+        _step(trace, "coord.network", src="network", dst="coordinator",
+              evidence={"network_velocity_band": net_band}, stores=len(merchants))
         facts = {**facts, "network_velocity_band": net_band}
+        if known_travel:  # the bank already answered over the Grid: decide on that answer, never ask twice
+            facts = {**facts, "travel_check": known_travel}
+        if needs_travel_check(facts):  # round 2: one targeted question, to the bank only
+            _step(trace, "coord.conflict", src="coordinator", round=2, reason=CONFLICT)
+            _step(trace, "coord.question", src="coordinator", dst="store", round=2, purpose=TRAVEL_PURPOSE, via="in-process")
+            try:
+                travel = travel_round(decision_id, ref, card_region, region_of(buyer_country), "merchant", note, trace)
+            except WireViolation as e:  # nothing crossed: a person decides, never an automatic approve
+                travel = {}
+                _step(trace, "guard.blocked", src="store", dst="coordinator", status="rejected", reason=str(e), round=2)
+            unanswered = not travel
+            _step(trace, "coord.reply", src="store", dst="coordinator", round=2, via="in-process",
+                  status="verified" if travel else "error", evidence=travel or None)
+            facts = {**facts, **travel}
         verdict = decide(facts)
+        if unanswered:
+            verdict = hold_unanswered(verdict)
         verdict["network"] = {"band": net_band, "merchants": merchants}
         if net_band == "high":
             verdict["network_alert"] = {"token": facts["token"], "merchants": merchants}
         verdict["explanation"] = explain(verdict)  # display only; never changes the decision
         verdict["decided_via"] = "in-process"
+        if trace:
+            tr.record_gate(trace, verdict, facts, via="in-process")
 
     if verdict.get("network_alert"):
         alerts[verdict["network_alert"]["token"]] = {**verdict["network_alert"], "t": time.time()}
@@ -504,10 +683,12 @@ def checkout():
     extra = {"agent": agent_info} if agent_info else {}
     if verdict["decision"] == "approve":
         payment = settle(vid, amount, True)
+        _settled(trace, payment, approve=True)
         if payment.get("status") == "succeeded":
             payments[payment["auth_code"]] = {"amount": amount, "features": local_features, "store": store,
                                               "facts": verdict.get("facts", facts), "t": time.time(), "disputed": False,
                                               "decision_id": decision_id}
+        _step(trace, "outcome", outcome="approved", charged=payment.get("status") == "succeeded")
         return jsonify({"outcome": "approved", "verdict": verdict, "payment": payment, **extra})
     suspected = ("step_up" if verdict["decision"] == "step_up" else
                  "soft_decline" if verdict["decision"] == "decline" and not verdict.get("hard") and SECOND_LOOK_ON_DECLINE else None)
@@ -515,16 +696,21 @@ def checkout():
         rid = secrets.token_hex(4)
         pending[rid] = {"vid": vid, "amount": amount, "facts": verdict.get("facts", facts), "verdict": verdict,
                         "features": local_features, "store": store, "t": time.time(), "decision_id": decision_id,
-                        "kind": suspected, "cites": list(verdict.get("cites", []))}
+                        "kind": suspected, "cites": list(verdict.get("cites", [])),
+                        "trace_id": trace.id if trace else None}
+        _step(trace, "review.opened", src="gate", dst="human", review_id=rid,
+              detail="automation paused: the payment is held until a person decides")
+        _step(trace, "outcome", outcome="needs_review", charged=False)
         return jsonify({"outcome": "needs_review", "review_id": rid, "suspected": suspected, "verdict": verdict, **extra})
-    settle(vid, amount, approve=False)
+    _settled(trace, settle(vid, amount, approve=False), approve=False)
+    _step(trace, "outcome", outcome="declined", charged=False)
     return jsonify({"outcome": "declined", "verdict": verdict, "charged": False, **extra})
 
 
 @app.get("/reviews")
 def reviews():
-    return jsonify([{"id": k, "amount": v["amount"], "facts": public_fields(v["facts"]), "suspected": v.get("kind"),
-                     "awaiting_second": bool(v.get("first_approval")),
+    return jsonify([{"id": k, "amount": v["amount"], "facts": public_fields(v["facts"]), "store": v.get("store"),
+                     "suspected": v.get("kind"), "awaiting_second": bool(v.get("first_approval")),
                      "verdict": {**v["verdict"], "facts": public_fields(v["verdict"].get("facts", {}))}}
                     for k, v in pending.items()])  # the verification id stays on the node
 
@@ -536,6 +722,20 @@ def review_stats():
     return jsonify({**review_store.stats(review_audit.entries, pending, time.time()),
                     "reasons": list(review_store.REASONS), "audit_chain_ok": review_audit.verify(),
                     "audit_head": audit.head(review_audit.entries), "audit_load_error": review_audit.load_error})
+
+
+@app.get("/trace/<trace_id>")
+def get_trace(trace_id):
+    """The live investigation for one checkout: steps after ?after=<seq>. Bands, counts and ids only."""
+    trace = traces.get(trace_id)
+    if trace is None:
+        return jsonify({"events": [], "done": False, "known": False})
+    try:
+        after = int(request.args.get("after", "-1"))
+    except ValueError:
+        after = -1
+    return jsonify({"events": trace.since(after), "done": trace.done, "known": True,
+                    "card_numbers_seen_by_coordinator": ledger.card_numbers_seen_by_coordinator()})
 
 
 @app.post("/reviews/<rid>/<action>")
@@ -566,18 +766,25 @@ def review(rid, action):
             return jsonify({"error": "a different reviewer must give the second approval"}), 409
         first_reviewer = first["reviewer"]
     pending.pop(rid)
+    trace = traces.get(item.get("trace_id") or "")
+    _step(trace, "review.decided", src="human", dst="store", action=action, review_id=rid)
     add_label(item["features"], 0 if action == "approve" else 1, "review", op["reason"], item.get("decision_id"), now)  # the human just taught the model
     review_audit.record(review_store.opinion_entry(rid, item, action, "approved" if action == "approve" else "declined",
                                                    op, now, first_reviewer))
     if action == "approve":
         payment = settle(item["vid"], item["amount"], True)
+        _settled(trace, payment, approve=True)
         if payment.get("status") == "succeeded":
             payments[payment["auth_code"]] = {"amount": item["amount"], "features": item["features"], "store": item["store"],
                                               "facts": item["facts"], "t": time.time(), "disputed": False,
                                               "decision_id": item.get("decision_id")}
-        return jsonify({"outcome": "approved_by_human", "payment": payment, "labels": len(labels)})
-    return jsonify({"outcome": "declined_by_human", "payment": settle(item["vid"], item["amount"], False),
-                    "charged": False, "labels": len(labels)})
+        _step(trace, "outcome", outcome="approved_by_human", charged=payment.get("status") == "succeeded")
+        return jsonify({"outcome": "approved_by_human", "payment": payment, "labels": len(labels), "trace_id": item.get("trace_id")})
+    payment = settle(item["vid"], item["amount"], False)
+    _settled(trace, payment, approve=False)
+    _step(trace, "outcome", outcome="declined_by_human", charged=False)
+    return jsonify({"outcome": "declined_by_human", "payment": payment,
+                    "charged": False, "labels": len(labels), "trace_id": item.get("trace_id")})
 
 
 @app.get("/payments")

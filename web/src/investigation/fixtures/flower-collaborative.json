@@ -1,0 +1,386 @@
+[
+ {
+  "amount_cents": 6400,
+  "attack": null,
+  "bytes": 7,
+  "dst": "store",
+  "federation": "local-agent",
+  "kind": "payment.started",
+  "processor": "stripe",
+  "seq": 0,
+  "src": "buyer",
+  "store": "cardguard-store",
+  "t": 0.0
+ },
+ {
+  "detail": "payment-method id, looked up in Stripe",
+  "dst": "stripe",
+  "kind": "processor.verify.request",
+  "seq": 1,
+  "src": "store",
+  "t": 0.0
+ },
+ {
+  "dst": "store",
+  "evidence": {
+   "card_funding": "credit",
+   "cvc_check": "pass"
+  },
+  "kind": "processor.verify.reply",
+  "latency_ms": 0,
+  "seq": 2,
+  "src": "stripe",
+  "status": "ok",
+  "t": 0.1
+ },
+ {
+  "detail": "pseudonymous card reference and issuing region",
+  "dst": "bank",
+  "kind": "bank.attest.request",
+  "seq": 3,
+  "src": "store",
+  "t": 0.1
+ },
+ {
+  "dst": "store",
+  "evidence": {
+   "issuer_behavior": "low",
+   "issuer_recent_declines": "none"
+  },
+  "kind": "bank.attest.reply",
+  "latency_ms": 1,
+  "seq": 4,
+  "src": "bank",
+  "status": "ok",
+  "t": 1.0
+ },
+ {
+  "evidence": {
+   "amount_band": "low",
+   "country_mismatch": "yes",
+   "model_risk_band": "high",
+   "new_customer": "no",
+   "velocity_band": "medium"
+  },
+  "kind": "store.facts",
+  "private": {
+   "buyer_region": "Europe",
+   "card_region": "North America",
+   "purchases_here_24h": 4
+  },
+  "seq": 5,
+  "src": "store",
+  "t": 1.1
+ },
+ {
+  "dst": "coordinator",
+  "federation": "local-agent",
+  "kind": "flower.run.request",
+  "seq": 6,
+  "src": "store",
+  "t": 1.1
+ },
+ {
+  "dst": "coordinator",
+  "kind": "flower.run.started",
+  "run_id": "11102192617470830952",
+  "seq": 7,
+  "src": "store",
+  "t": 5.3
+ },
+ {
+  "kind": "coord.nodes",
+  "nodes": [
+   "11167642584137410316"
+  ],
+  "seq": 8,
+  "src": "coordinator",
+  "t": 1016.7
+ },
+ {
+  "bytes": 57,
+  "dst": "store",
+  "kind": "coord.question",
+  "nodes": [
+   "11167642584137410316"
+  ],
+  "purpose": "fraud-risk",
+  "round": 1,
+  "seq": 9,
+  "src": "coordinator",
+  "t": 1017.4,
+  "via": "flower"
+ },
+ {
+  "detail": "the store's SuperNode read this decision's guarded facts from its own node",
+  "kind": "node.read",
+  "node": "11167642584137410316",
+  "seq": 10,
+  "src": "store",
+  "status": "disclosed",
+  "t": 2380.3
+ },
+ {
+  "bytes": 344,
+  "dst": "coordinator",
+  "evidence": {
+   "amount_band": "low",
+   "card_funding": "credit",
+   "country_mismatch": "yes",
+   "cvc_check": "pass",
+   "issuer_behavior": "low",
+   "issuer_recent_declines": "none",
+   "model_risk_band": "high",
+   "new_customer": "no",
+   "token": "tok_mm\u2026fng",
+   "velocity_band": "medium"
+  },
+  "kind": "coord.reply",
+  "latency_ms": 1816,
+  "node": "11167642584137410316",
+  "reason": null,
+  "round": 1,
+  "seq": 11,
+  "src": "store",
+  "status": "verified",
+  "t": 3035.0,
+  "via": "flower"
+ },
+ {
+  "dst": "coordinator",
+  "evidence": {
+   "network_velocity_band": "low"
+  },
+  "kind": "coord.network",
+  "seq": 12,
+  "src": "network",
+  "t": 3035.1
+ },
+ {
+  "kind": "coord.conflict",
+  "reason": "store: the buyer is outside the card's country; bank: an ordinary cardholder, card checks pass",
+  "round": 2,
+  "seq": 13,
+  "src": "coordinator",
+  "t": 3035.3
+ },
+ {
+  "bytes": 59,
+  "dst": "store",
+  "kind": "coord.question",
+  "nodes": [
+   "11167642584137410316"
+  ],
+  "purpose": "travel-check",
+  "round": 2,
+  "seq": 14,
+  "src": "coordinator",
+  "t": 3035.8,
+  "via": "flower"
+ },
+ {
+  "detail": "the store's SuperNode passes the question to the bank over the signed channel",
+  "kind": "node.read",
+  "node": "11167642584137410316",
+  "round": 2,
+  "seq": 15,
+  "src": "store",
+  "status": "relayed",
+  "t": 6416.5
+ },
+ {
+  "detail": "signed question: card reference, issuing region, buyer region",
+  "dst": "bank",
+  "kind": "bank.travel.request",
+  "round": 2,
+  "seq": 16,
+  "src": "store",
+  "t": 6416.5
+ },
+ {
+  "dst": "store",
+  "evidence": {
+   "travel_check": "implausible"
+  },
+  "kind": "bank.travel.reply",
+  "latency_ms": 1,
+  "round": 2,
+  "seq": 17,
+  "src": "bank",
+  "status": "ok",
+  "t": 6417.4
+ },
+ {
+  "bytes": 130,
+  "dst": "coordinator",
+  "evidence": {
+   "travel_check": "implausible"
+  },
+  "kind": "coord.reply",
+  "latency_ms": 4136,
+  "node": "11167642584137410316",
+  "reason": null,
+  "round": 2,
+  "seq": 18,
+  "src": "store",
+  "status": "verified",
+  "t": 7067.4,
+  "via": "flower"
+ },
+ {
+  "contributions": [
+   {
+    "fact": "country_mismatch=yes",
+    "party": "store",
+    "points": 2
+   },
+   {
+    "fact": "velocity_band=medium",
+    "party": "store",
+    "points": 1
+   },
+   {
+    "fact": "model_risk_band=high",
+    "party": "store",
+    "points": 2
+   },
+   {
+    "fact": "travel_check=implausible",
+    "party": "bank",
+    "points": 0
+   }
+  ],
+  "decided_by": "rules",
+  "decision": "step_up",
+  "dst": "gate",
+  "explanation": {
+   "by": "template",
+   "text": "Sent to a human reviewer because of country mismatch: yes, velocity band: medium, model risk band: high, travel check: implausible."
+  },
+  "kind": "gate.decision",
+  "lines": [
+   {
+    "rule": "evidence",
+    "state": "pass",
+    "text": "Evidence complete: one verified fact set for this decision"
+   },
+   {
+    "rule": "privacy",
+    "state": "pass",
+    "text": "Privacy check passed: closed vocabulary, no card-like values"
+   },
+   {
+    "rule": "hard_stop",
+    "state": "pass",
+    "text": "No hard stop: the CVC check did not fail"
+   },
+   {
+    "rule": "score",
+    "state": "info",
+    "text": "Risk points 5: review from 3, decline from 8"
+   },
+   {
+    "rule": "round_2",
+    "state": "warn",
+    "text": "Round 2: the bank finds the travel implausible, so a person must look"
+   },
+   {
+    "rule": "rules",
+    "state": "warn",
+    "text": "Auto-decline line not reached: rules send it to a person"
+   },
+   {
+    "rule": "model",
+    "state": "info",
+    "text": "No model vote configured: rules decide alone"
+   }
+  ],
+  "parties": [
+   {
+    "facts": {
+     "card_funding": "credit",
+     "cvc_check": "pass"
+    },
+    "floor": false,
+    "hard": false,
+    "level": "low",
+    "party": "stripe",
+    "points": 0
+   },
+   {
+    "facts": {
+     "issuer_behavior": "low",
+     "issuer_recent_declines": "none",
+     "travel_check": "implausible"
+    },
+    "floor": true,
+    "hard": false,
+    "level": "medium",
+    "party": "bank",
+    "points": 0
+   },
+   {
+    "facts": {
+     "amount_band": "low",
+     "country_mismatch": "yes",
+     "model_risk_band": "high",
+     "new_customer": "no",
+     "velocity_band": "medium"
+    },
+    "floor": false,
+    "hard": false,
+    "level": "high",
+    "party": "store",
+    "points": 5
+   },
+   {
+    "facts": {
+     "network_velocity_band": "low"
+    },
+    "floor": false,
+    "hard": false,
+    "level": "low",
+    "party": "network",
+    "points": 0
+   }
+  ],
+  "round_2": true,
+  "score": 5,
+  "seq": 19,
+  "src": "coordinator",
+  "t": 7572.8,
+  "via": "flower"
+ },
+ {
+  "kind": "flower.run.finished",
+  "run_id": "11102192617470830952",
+  "seq": 20,
+  "t": 9082.5
+ },
+ {
+  "detail": "bound to the SuperNode that read our facts",
+  "dst": "store",
+  "kind": "verdict.received",
+  "node": "11167642584137410316",
+  "seq": 21,
+  "src": "coordinator",
+  "status": "accepted",
+  "t": 9082.7
+ },
+ {
+  "detail": "automation paused: the payment is held until a person decides",
+  "dst": "human",
+  "kind": "review.opened",
+  "review_id": "03a9ce25",
+  "seq": 22,
+  "src": "gate",
+  "t": 9082.7
+ },
+ {
+  "charged": false,
+  "kind": "outcome",
+  "outcome": "needs_review",
+  "seq": 23,
+  "t": 9082.7
+ }
+]

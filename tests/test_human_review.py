@@ -5,6 +5,7 @@ import pytest
 
 from cardguard.decision import audit
 from cardguard.payment_processing import merchant, review_store
+from tests.bank_fake import LocalBank
 from tests.stripe_fake import processor
 from tests.test_merchant import CVC_FAIL, MASTER_DE, REVIEWER, VISA, buy
 
@@ -15,6 +16,7 @@ SOFT = {"decision": "decline", "score": 9, "cites": ["amount_band=high", "countr
 @pytest.fixture
 def client(monkeypatch, tmp_path):
     monkeypatch.setattr(merchant, "processor", processor())
+    monkeypatch.setattr(merchant, "bank", LocalBank())  # in-process, like test_merchant: no real connection attempts
     monkeypatch.setattr(merchant, "REVIEWER_TOKEN", "rev-token")
     monkeypatch.setattr(merchant.label_store, "path", str(tmp_path / "labels.jsonl"))
     monkeypatch.setattr(merchant, "review_audit", review_store.ReviewAudit(str(tmp_path / "audit.jsonl")))
@@ -37,6 +39,7 @@ def test_soft_decline_is_queued_not_charged_and_hard_decline_is_not(client, monk
     assert client.get("/reviews").get_json()[0]["suspected"] == "soft_decline"
     monkeypatch.undo()
     monkeypatch.setattr(merchant, "processor", processor()); monkeypatch.setattr(merchant, "REVIEWER_TOKEN", "rev-token")
+    monkeypatch.setattr(merchant, "bank", LocalBank())
     n = len(merchant.pending)
     hard = buy(client, card=CVC_FAIL)
     assert hard["outcome"] == "declined" and hard["verdict"].get("hard") and len(merchant.pending) == n

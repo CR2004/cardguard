@@ -17,11 +17,21 @@ class CardError(Exception):
 
 
 def fake_sdk(broken: bool = False):
+    confirmed = set()
+
     def retrieve(pm):
         if broken:
             raise ConnectionError("stripe unreachable")
         c = CARDS.get(pm) or (_ for _ in ()).throw(KeyError(pm))
-        return NS(card=NS(country=c["country"], funding=c["funding"], fingerprint=c["fingerprint"], checks=NS(cvc_check=c["cvc"])))
+        # like Stripe: the CVC result is unknown until the method has been confirmed once
+        cvc = c["cvc"] if pm in confirmed else None
+        return NS(card=NS(country=c["country"], funding=c["funding"], fingerprint=c["fingerprint"], checks=NS(cvc_check=cvc)))
+
+    def setup(**kw):
+        confirmed.add(kw["payment_method"]); return NS(status="succeeded")
+
+    def attach(pm, customer=None):
+        confirmed.add(pm); return NS(id=pm)
 
     def create(**kw):
         c = CARDS.get(kw.get("payment_method"), {})
@@ -29,7 +39,8 @@ def fake_sdk(broken: bool = False):
             raise CardError()
         return NS(status="succeeded", id="pi_test_" + kw.get("payment_method", "x")[3:])
 
-    return NS(api_key=None, PaymentMethod=NS(retrieve=retrieve), PaymentIntent=NS(create=create), error=NS(CardError=CardError))
+    return NS(api_key=None, PaymentMethod=NS(retrieve=retrieve, attach=attach), PaymentIntent=NS(create=create),
+              SetupIntent=NS(create=setup), Customer=NS(create=lambda **kw: NS(id="cus_test")), error=NS(CardError=CardError))
 
 
 def processor(broken: bool = False, clock=None) -> StripeProcessor:

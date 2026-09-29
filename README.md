@@ -54,11 +54,13 @@ Python 3.11 or 3.12, [uv](https://docs.astral.sh/uv/).
     git clone https://github.com/CR2004/cardguard.git && cd cardguard
     uv venv --python 3.12 .venv && uv pip install --python .venv/bin/python -r requirements.txt
     source .venv/bin/activate
-    python -m pytest -q                              # 142 tests, offline, seconds
+    python -m pytest -q                              # offline, seconds
+    pnpm --dir web install && pnpm --dir web build   # the investigation UI (web/dist), served by the merchant node
 
     cp .env.example .env                             # then fill in: STRIPE_SECRET_KEY, STRIPE_PUBLISHABLE_KEY (test keys,
                                                      # required), FLWR_MODEL_API_KEY (live explanations), TYPESAFE_API_KEY (Jev)
-    python run_demo.py                               # merchant on http://127.0.0.1:4242; prints the reviewer token
+    python run_demo.py                               # bank attestation :4243 + merchant http://127.0.0.1:4242;
+                                                     # prints the reviewer token
 
 **Decisions over Flower** (the multi-agent path), three terminals:
 
@@ -76,22 +78,34 @@ For the specialist models run `python -m cardguard.specialists.export` (writes `
 
 1. **Card entry.** Stripe Elements sends the number, expiry and CVC to Stripe. The store receives a
    payment-method token and posts only that.
-2. **Facts.** The merchant asks Stripe for the card's metadata and turns it, plus its own history,
-   into banded facts: amount relative to its own order sizes, country mismatch, funding, CVC
-   result, velocity, first sighting, and the federated model's risk band (the coordinator adds an eighth, the
-   network view). The model scores nine raw local features; only its band leaves the node. When
-   `specialist_weights.json` exists, four small one-signal-family models also score the checkout and their
-   stacked band, `specialist_stack_band`, joins the facts (their four individual bands stay in the local audit note).
-3. **Wire guard.** The facts pass through a ledger that allows one disclosure per decision, limits
+2. **Bank attestation (round 1).** The merchant asks the bank attestation node, over a signed local
+   channel, about the card's pseudonymous reference and coarse issuing region. The bank answers two
+   bands (`issuer_behavior`, `issuer_recent_declines`) from synthetic private cardholder history that
+   never leaves it. The bank never sees a card and never moves money; Stripe is the only payment rail.
+   The card reference is a keyed hash of Stripe's TEST card fingerprint: a demo correlation, not an
+   issuer-network identity protocol.
+3. **Facts.** The merchant asks Stripe for the card's metadata and turns it, plus its own history,
+   into eight banded facts: amount relative to its own order sizes, country mismatch, funding, CVC
+   result, velocity, first sighting, and the federated model's risk band. The model scores nine raw
+   local features; only its band leaves the node. When `specialist_weights.json` exists, four small
+   one-signal-family models also score the checkout and their stacked band, `specialist_stack_band`, joins
+   the facts (their four individual bands stay in the local audit note).
+4. **Wire guard.** The facts pass through a ledger that allows one disclosure per decision, limits
    disclosures per card, and rejects unknown keys, off-vocabulary values, oversized strings and
    card-like digit runs. Everything is logged in a hash-chained ledger.
-4. **Agents on Flower.** The merchant starts a Flower run. The coordinator agent on the SuperLink asks
+5. **Agents on Flower.** The merchant starts a Flower run. The coordinator agent on the SuperLink asks
    the merchant agent on the SuperNode a purpose-tagged question over Grid; the merchant agent fetches
    the guarded facts from its own node and replies; the coordinator re-guards the reply, adds its own
    fact (how many merchants saw this card in the last ten minutes), runs the rules and Jev's vote in
    code, hard-declines a failed CVC, sends low-confidence approvals to a human, asks Endeavor for one
    sentence, and emits the verdict. The merchant accepts it only from its own node, for its own decision.
-5. **Outcome.** Approve confirms a Stripe test-mode PaymentIntent. Step-up waits for a credentialed
+6. **Round 2, only on disagreement.** When the store sees a buyer outside the card's country while the
+   card checks pass and the bank sees an ordinary cardholder, the coordinator sends one targeted
+   question over Grid to the node that answered round 1; that node relays it to the bank, which checks
+   its private history locally and returns only `travel_check` (plausible / implausible / unknown).
+   `implausible` puts a person in the loop and never declines on its own; the model never sees it; a
+   round 2 with no verified answer holds the payment for a person.
+7. **Outcome.** Approve confirms a Stripe test-mode PaymentIntent. Step-up waits for a credentialed
    human, and so does a soft decline (a second look; a failed CVC stays a final decline). Decline voids. The
    human gives a reason from a fixed list, which is written to a tamper-evident audit. Human decisions and
    chargebacks become labels on the node, saved to disk; "Retrain" runs a
@@ -353,11 +367,13 @@ visible to one specialist, so its numbers say nothing about real performance.
 |---|---|
 | cardguard/decision/ | guard (schema, leak scanner, ledger), coordinator (rules, Jev, Verifier), explain (Endeavor), network (ring fact), audit (hash chain), llm (one model client) |
 | cardguard/agentapp/ | agent_app (coordinator and merchant roles over Grid), launch (start a run via the SuperLink Control API), dispute_agent |
-| cardguard/payment_processing/ | merchant (Flask node), review_store (human opinions, audit, saved labels), stripe_processor, processor_base, agent_llm (the vulnerable demo agent), checkout.html |
+| cardguard/payment_processing/ | merchant (Flask node), review_store (human opinions, audit, saved labels), stripe_processor, processor_base, agent_llm (the vulnerable demo agent), trace (the live investigation trace the UI animates) |
+| cardguard/bank/ | node (bank attestation: synthetic private history, bands only, signed requests), client (the merchant's side) |
+| web/ | the investigation UI: React + Vite + TypeScript; the graph animates only real trace events |
 | cardguard/training/ | fl (numpy logistic regression + FedAvg), flower_app (Flower ServerApp/ClientApp), retrain, join, privacy |
 | cardguard/data/ieee_cis.py | real data: five verticals, features relative to each, time holdout |
 | cardguard/specialists/ | four signal-family models scored live (`live.py`), trained and exported (`export.py`), plus the offline experiment (`experiment.py`, `federated.py`) |
-| tests/ | offline; Jev, Endeavor, the LLM and the Stripe SDK are faked |
+| tests/ | offline; Jev, Endeavor, the LLM and the Stripe SDK are faked; the bank node runs in-process |
 | run_demo.py, scripts/ | demo runner; SuperLink and SuperNode launchers |
 
 ## Human in the loop: what is implemented
