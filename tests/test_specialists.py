@@ -135,3 +135,40 @@ def test_deployable_subset_names_exist_and_drop_vesta_only_families(fam):
     assert "device" not in small["families"] and "network" not in small["families"]
     assert not any(n.startswith("C") and n[1:].isdigit() for n in small["families"]["transaction"]["names"])
     assert all(small["families"][k]["X"].shape[0] == len(fam["y"]) for k in small["families"])
+
+
+# ---------- federated measurement (specialists trained with FedAvg across merchants) ----------
+
+def test_fedavg_weights_is_the_row_weighted_mean():
+    from cardguard.specialists.federated import fedavg_weights
+    w = fedavg_weights([(np.array([0.0, 4.0]), 1), (np.array([4.0, 0.0]), 3)])
+    assert np.allclose(w, [3.0, 1.0])
+
+
+def test_each_federated_client_trains_only_on_its_own_rows(monkeypatch):
+    """The server side only ever sees weight vectors: fit_logistic is called with one client's rows at a time."""
+    from cardguard.specialists import federated
+    rng = np.random.default_rng(0)
+    parts = [(rng.random((n, 3)), (rng.random(n) < 0.1).astype(float)) for n in (40, 70, 55)]
+    seen = []
+    real = federated.fit_logistic
+
+    def spy(X, y, **kw):
+        seen.append(len(y))
+        return real(X, y, **kw)
+
+    monkeypatch.setattr(federated, "fit_logistic", spy)
+    w = federated.fedavg_train(parts, dim=3, rounds=2, local_epochs=2)
+    assert set(seen) == {40, 70, 55} and len(seen) == 6  # never a pooled call, 3 clients x 2 rounds
+    assert w.shape == (4,) and np.isfinite(w).all()
+
+
+def test_federated_measurement_runs_and_federation_beats_training_alone(fam):
+    from cardguard.specialists.federated import MODES, report, run_federated
+    r = run_federated(fam, epochs=150, rounds=25, local_epochs=4)
+    assert set(r["stack_scores"]) == set(MODES) and set(r["stack_bands"]) == set(MODES)
+    assert set(r["merchants"]) == set(fam["vert_names"])
+    fed, cen, loc = (r["stack_scores"][m]["auc"] for m in ("federated", "central", "local"))
+    assert fed > loc + 0.01          # merchants gain from federating
+    assert fed > cen - 0.05          # and lose little against pooling every row in one place
+    assert "personalised" in report(r)

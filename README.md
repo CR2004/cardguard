@@ -30,7 +30,8 @@ seeing only one family of signals, stacked into one score. Using every dataset c
 against 0.773 for the current 9-feature model (0.839 with bands only). **Using only features our checkout can
 compute, the gain shrinks to about +0.014 AUC (0.787), and the bands-only version is 0.763, slightly below the
 current model**: the big gain comes from columns a payment processor engineered, not from our checkout. Results,
-integration plan and human-in-the-loop plan: [Fraud specialists experiment](#fraud-specialists-experiment-branch-specialists-experiment).
+a federated measurement (FedAvg across the five merchants costs only 0.006 AUC against pooling, but merchants
+training alone do as well overall), the integration plan and the human-in-the-loop plan: [Fraud specialists experiment](#fraud-specialists-experiment-branch-specialists-experiment).
 
 **Left, in order**
 1. Commit everything (git shows the package as untracked) and push.
@@ -424,6 +425,89 @@ Geo 0.787. Behavior falls back to AUC 0.65 because the `D` timedeltas that lifte
   IEEE-CIS columns all came from one processor, so this dataset shows what the combination could reach, not what
   our single-merchant demo checkout can produce.
 
+### Federated measurement: the specialists trained with FedAvg across the five merchants
+
+Everything above trains each specialist on all merchants' rows pooled in one process, so it says nothing about
+federated learning. `--federated` fixes that. The five ProductCD verticals (W, C, R, H, S) act as five merchant
+nodes, and every specialist is trained four ways. Rows never leave their merchant except in the first mode, which
+is there only as the pooled reference.
+
+| Mode | What happens |
+|---|---|
+| central | all merchants' rows pooled (the reference; needs everyone's data in one place) |
+| local | each merchant trains alone on its own rows |
+| federated | FedAvg: 50 rounds, each merchant trains 6 epochs from the global weights on its own rows, the server averages the weights by row count. Only weights move. |
+| personalised | the federated weights, then 40 local epochs on the merchant's own rows |
+
+Specialists are logistic regression here because FedAvg averages weight vectors. The stacker (the coordinator) is
+trained pooled in every mode, so the modes differ only in how the specialists were trained. Same time-ordered
+splits and test period as above. Merchant sizes (fit rows / test fraud): W 232,506 / 1,810; C 38,658 / 1,617;
+R 27,462 / 257; H 26,073 / 197; S 6,003 / 183.
+
+**Stack of scores, all dataset columns** (AUC on the test period; "all" pools every merchant's test rows):
+
+| Specialists trained | All | Catch at 5% | W | H | C | S | R |
+|---|---|---|---|---|---|---|---|
+| central (pooled) | 0.846 | 45% | 0.776 | 0.867 | 0.870 | 0.639 | 0.932 |
+| local (alone) | 0.852 | 43% | 0.779 | 0.872 | 0.892 | 0.490 | 0.933 |
+| **federated (FedAvg)** | **0.840** | **40%** | **0.784** | **0.841** | **0.825** | **0.526** | **0.912** |
+| personalised | 0.844 | 38% | 0.782 | 0.855 | 0.850 | 0.488 | 0.920 |
+
+**Stack of scores, checkout-computable features only** (`--deployable`):
+
+| Specialists trained | All | Catch at 5% | W | H | C | S | R |
+|---|---|---|---|---|---|---|---|
+| central (pooled) | 0.783 | 23% | 0.741 | 0.519 | 0.626 | 0.404 | 0.558 |
+| local (alone) | 0.794 | 23% | 0.763 | 0.578 | 0.621 | 0.364 | 0.676 |
+| **federated (FedAvg)** | **0.777** | **17%** | **0.758** | **0.517** | **0.609** | **0.383** | **0.559** |
+| personalised | 0.790 | 20% | 0.761 | 0.549 | 0.621 | 0.384 | 0.639 |
+
+Stacks of bands only (all columns): central 0.815, local 0.830, federated 0.829, personalised 0.819; with
+checkout-computable features: 0.758, 0.744, 0.778, 0.771. These are within noise of each other.
+
+**Single specialists, overall AUC, pooled versus FedAvg:**
+
+| Specialist | All columns: central -> federated | Checkout-only: central -> federated |
+|---|---|---|
+| Transaction | 0.830 -> 0.810 | 0.748 -> 0.557 |
+| Identity | 0.781 -> 0.770 | 0.677 -> 0.653 |
+| Behavior | 0.765 -> 0.680 | 0.665 -> 0.615 |
+| Network | 0.710 -> 0.635 | (no checkout feature) |
+| Merchant | 0.694 -> 0.685 | 0.694 -> 0.674 |
+| Geo | 0.685 -> **0.470** | 0.656 -> **0.344** |
+| Device | 0.664 -> 0.654 | (no checkout feature) |
+
+**What this shows, without flattering the federation**
+- **The specialist split survives federation overall.** With all columns the federated stack scores 0.840 against
+  0.846 pooled, so it loses about 0.006 AUC while no row leaves its merchant.
+- **But merchants training alone do as well overall (0.852), and better for three of the five.** FedAvg beats
+  alone only for the biggest merchant W (+0.005) and the smallest S (+0.036). It is worse for H (-0.031),
+  C (-0.067) and R (-0.021). This repeats the earlier finding in this README: one shared linear model cannot fit
+  five different fraud mixes.
+- **Small merchants are the real beneficiary, and only pooling fully helps them.** S goes 0.490 alone, 0.526
+  federated, 0.639 pooled. S has 183 fraud cases in its test period, so differences of a few hundredths for S and
+  H are within noise.
+- **Personalising did not rescue it** with these settings (0.844, still under alone at 0.852). The fine-tune
+  step was not tuned.
+- **A feature that means different things at different merchants breaks under FedAvg.** Geo's only
+  checkout-computable feature, `country_mismatch`, shows why. At C, 99.8% of transactions are mismatches and
+  every match is legitimate. At W (232k rows) a mismatch is rare and *less* fraudulent than average. Local weights
+  are +0.47 at C, +0.86 at H, -0.39 at W, -3.4 at S. FedAvg weights by rows, so W dominates and the shared weight
+  becomes -0.38, while the pooled model gets +1.58 because it can see that mismatches cluster in the fraud-heavy
+  merchant. That is a between-merchant effect that no single merchant can see, so the pooled specialist AUCs
+  in the earlier tables are partly flattered by merchant mix.
+- **Catch at 5% falls more than AUC** under FedAvg with checkout-only features (23% pooled, 17% federated).
+
+**What it means for the design**
+1. The vertical split does not need merchant-level averaging to work: it costs about 0.006 AUC to keep rows local.
+2. Apply merchant-level FedAvg selectively. With all columns it costs little for signals with a stable meaning
+   across merchants (Transaction, Identity, Device lose 0.010-0.019) and a lot for signals tied to a merchant's
+   own mix (Geo, Behavior, Network lose 0.075-0.216). Even Transaction is not safe when reduced to checkout-only
+   features: it loses 0.19 there, because its sub-cent flag mostly tracks which merchant a row came from. Give
+   merchant-specific signals a per-merchant model, or leave them to the party that owns them.
+3. Where FedAvg pays is the smallest merchants, as before. Do not claim it beats a merchant training alone
+   in general.
+
 ### What the data told us, and what we changed
 - The first real run left Behavior weakest (AUC 0.665, catching 8% in the top 5%) because `new_product` and
   `hour_unusual` fire on under 2% of rows: the card proxy has sparse history. Adding the unused `D2, D4, D5, D10,
@@ -453,9 +537,10 @@ python -m cardguard.specialists.experiment --synthetic          # offline, secon
 python -m cardguard.specialists.experiment                      # real data, ~2 min first run (builds the cache)
 python -m cardguard.specialists.experiment --model lgbm         # LightGBM specialists, ~1.5 min
 python -m cardguard.specialists.experiment --deployable         # only checkout-computable features
+python -m cardguard.specialists.experiment --federated          # FedAvg across the 5 merchants, 4 training modes (several minutes)
 python -m cardguard.specialists.experiment --rebuild            # ignore datasets/specialist_features.npz
 python -m cardguard.specialists.experiment --limit 50000        # quick look at the first 50k rows
-python -m pytest tests/test_specialists.py -q                   # 11 tests, offline
+python -m pytest tests/test_specialists.py -q                   # 14 tests, offline
 ```
 Needs `datasets/train_transaction.csv` and `datasets/train_identity.csv` (the `test_*` files have no labels and
 are not used). Synthetic mode is a wiring check only: its fraud types are built so each is visible to one
@@ -492,8 +577,10 @@ There are two independent ways to split fraud data, and the design uses both:
 
 - **Vertical axis (new).** Each specialist trains locally on its own columns and returns only a band. Nothing is
   averaged across specialists, because their weights mean different things.
-- **Horizontal axis (existing).** Inside a specialist that every merchant runs (Transaction, Behavior, Identity),
-  merchants still FedAvg their copies, so small merchants keep benefiting from the network.
+- **Horizontal axis (existing).** Inside a specialist that every merchant runs, merchants can FedAvg their copies.
+  Measured (see "Federated measurement"): it helps only the smallest merchant and hurts where a feature means
+  different things at different merchants, so use it selectively (Transaction, Identity, Device), not for Geo,
+  Behavior or Network.
 - **Model type matters.** FedAvg needs models that are weight vectors (logistic regression, small nets). LightGBM
   trees cannot be averaged that way (Flower has tree strategies in some versions; not checked for 1.39, so treat
   as unverified). The measurements say this costs little: with checkout-computable features logistic scores 0.783
@@ -567,7 +654,8 @@ ever see banded facts; the verdict stays computed in code; no card data anywhere
    lets parties who cannot pool their signal families still combine them.
 2. **Spend the build time on phase 2** (human in the loop after classification). It is safe, it is a visible demo
    moment, it uses only existing pieces, and it answers the safety and oversight criterion directly.
-3. **Add phase 3A only if time allows.** Skip 3B unless the deployable gain looks better on a re-check, and leave
+3. **Do not claim that merchant-level federation beats a merchant training alone.** The measurement above shows it matches the pooled stack (0.840 against 0.846) but merchants alone reach 0.852; it helps the smallest merchant.
+4. **Add phase 3A only if time allows.** Skip 3B unless the deployable gain looks better on a re-check, and leave
    phase 4 for after the hackathon.
 
 ## Decision logic

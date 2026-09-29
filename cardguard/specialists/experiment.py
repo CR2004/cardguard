@@ -129,6 +129,8 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--synthetic", action="store_true", help="offline demo data, six fraud types")
     ap.add_argument("--rebuild", action="store_true", help="ignore the feature cache")
+    ap.add_argument("--federated", action="store_true",
+                    help="train each specialist with FedAvg across the 5 merchants (logistic) and compare")
     ap.add_argument("--deployable", action="store_true",
                     help="only features a live merchant node could compute at checkout")
     ap.add_argument("--epochs", type=int, default=300)
@@ -150,6 +152,10 @@ def main() -> None:
     if a.deployable:
         fam = restrict(fam)
     print(f"rows {len(fam['y']):,}  fraud {fam['y'].mean():.2%}  test rows {int(fam['is_test'].sum()):,}\n")
+    if a.federated:
+        from cardguard.specialists import federated
+        print(federated.report(federated.run_federated(fam, epochs=a.epochs)))
+        return
     print(report(run(fam, epochs=a.epochs, model=a.model)))
 
 

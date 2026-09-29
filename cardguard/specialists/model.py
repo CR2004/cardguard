@@ -17,9 +17,13 @@ def sigmoid(z: np.ndarray) -> np.ndarray:
 
 
 def fit_logistic(X: np.ndarray, y: np.ndarray, epochs: int = 300, lr: float = 0.05,
-                 pos_weight: float = 10.0, l2: float = 1e-4) -> np.ndarray:
-    """Weights [bias, w1..wd]. Fraud is rare, so positives are upweighted."""
-    w, m, v = (np.zeros(X.shape[1] + 1) for _ in range(3))
+                 pos_weight: float = 10.0, l2: float = 1e-4, init: np.ndarray | None = None) -> np.ndarray:
+    """Weights [bias, w1..wd]. Fraud is rare, so positives are upweighted.
+
+    init warm-starts from given weights (a federated client starting a round from the global model);
+    the Adam moments always start fresh."""
+    w = np.zeros(X.shape[1] + 1) if init is None else init.copy()
+    m, v = np.zeros_like(w), np.zeros_like(w)
     sw = np.where(y == 1, pos_weight, 1.0)
     for t in range(1, epochs + 1):
         err = (predict(w, X) - y) * sw
