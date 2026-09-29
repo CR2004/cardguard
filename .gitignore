@@ -1,7 +1,7 @@
-# data: IEEE-CIS is 650 MB and licensed under Kaggle competition rules; never commit it,
+# datasets: IEEE-CIS is 650 MB and licensed under Kaggle competition rules; never commit it,
 # nor anything derived from it (feature caches). Keep only data/README.md.
-data/*
-!data/README.md
+datasets/*
+!datasets/README.md
 # local env and caches
 .venv/
 __pycache__/
@@ -11,3 +11,7 @@ __pycache__/
 # secrets are env vars only
 .env
 kaggle.json
+.claude/
+.demo/
+*.fab
+.ruff_cache/

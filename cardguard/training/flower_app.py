@@ -1,25 +1,28 @@
 """Flower wrapper for the federated fraud model (Flower 1.39 Message API).
 
 Each SuperNode is one merchant and trains only on its own rows: a ProductCD vertical of
-IEEE-CIS when data/train_transaction.csv is present (5 nodes), else a synthetic merchant
+IEEE-CIS when datasets/train_transaction.csv is present (5 nodes), else a synthetic merchant
 (3 nodes). The ServerApp runs FedAvg and saves the global weights to fl_weights.json
-(and .npy), which the merchant node loads to produce the `model_risk_band` fact.
+, which the merchant node loads to produce the `model_risk_band` fact.
 
 Local simulation:
-    python flower_app.py
+    python -m cardguard.training.flower_app
 """
 from __future__ import annotations
 
 import json
+import os
 
 import numpy as np
+
 from flwr.app import ArrayRecord, Context, Message, MetricRecord, RecordDict
 from flwr.clientapp import ClientApp
 from flwr.serverapp import Grid, ServerApp
-from flwr.serverapp.strategy import FedAvg
+from flwr.serverapp.strategy import FedAvg, FedMedian
 
-import fl
-import fl_data
+from cardguard import ROOT
+from cardguard.data import ieee_cis as fl_data
+from cardguard.training import fl, privacy
 
 ROUNDS = 30
 REAL = fl_data.available()
@@ -42,23 +45,33 @@ def train(msg: Message, context: Context) -> Message:
     merchant, (X, y) = local_rows(pid)
     w = msg.content["arrays"].to_numpy_ndarrays()[0]
     w, n = fl.local_train(w, X, y)
+    # Client-level DP accounting requires equal node weights, so DP mode averages nodes equally.
     content = RecordDict({"arrays": ArrayRecord([w]),
-                          "metrics": MetricRecord({"num-examples": n})})
+                          "metrics": MetricRecord({"num-examples": 1 if privacy.enabled() else n})})
     return Message(content=content, reply_to=msg)
 
 
 @server.main()
 def main(grid: Grid, context: Context) -> None:
     n = len(NODES)
-    strategy = FedAvg(fraction_evaluate=0.0, min_train_nodes=n, min_available_nodes=n)
+    # FL_ROBUST=1: coordinate-wise median instead of the mean, so one hostile node cannot dominate.
+    base = FedMedian if os.environ.get("FL_ROBUST") == "1" else FedAvg
+    strategy = base(fraction_evaluate=0.0, min_train_nodes=n, min_available_nodes=n)
+    if privacy.enabled():  # clip + Gaussian noise on every update, with an RDP privacy accountant
+        strategy = privacy.wrap(strategy, n)
     result = strategy.start(grid=grid, initial_arrays=ArrayRecord([fl.init_weights()]),
                             num_rounds=ROUNDS)
+    dp = privacy.spent(strategy)
+    if dp:
+        print(f"differential privacy: epsilon={dp['epsilon']} at delta={dp['delta']} after {dp['releases']} releases "
+              f"(noise {dp['noise_multiplier']}, clip {dp['clipping_norm']})")
     w = result.arrays.to_numpy_ndarrays()[0]
-    np.save("fl_weights.npy", w)
-    with open("fl_weights.json", "w") as f:  # Flower Hub allows .json, not .npy
+    if not np.all(np.isfinite(w)) or len(w) != len(fl.FEATURES) + 1:
+        raise SystemExit("aggregated weights are not finite or have the wrong shape: refusing to save them")
+    with open(ROOT / "fl_weights.json", "w") as f:  # Flower Hub allows .json, not .npy
         json.dump({"source": "ieee-cis" if REAL else "synthetic", "features": fl.FEATURES,
                    "weights": [float(x) for x in w], "band_cuts": list(fl.BAND_CUTS),
-                   "nodes": list(NODES), "rounds": ROUNDS}, f, indent=1)
+                   "nodes": list(NODES), "rounds": ROUNDS, "dp": dp}, f, indent=1)
     if REAL:
         data = fl_data.load()
         for v in fl_data.VERTICALS:

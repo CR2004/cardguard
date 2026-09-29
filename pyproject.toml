@@ -1,0 +1,43 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "cardguard"
+version = "0.1.0"
+description = "Multi-party card-risk decisions on Flower where card data never enters any model's context"
+license = { file = "LICENSE" }
+requires-python = ">=3.11,<3.13"
+dependencies = [
+    "flask>=3.0",
+    "numpy>=2.0",
+    "cryptography>=46.0.7",  # flwr 1.39 pins cryptography <47: the FAB runtime env must resolve with it
+    "stripe>=10.0",
+    "typesafe-sdk>=0.7.2",
+    "flwr[simulation]>=1.39",
+    "openai>=1.60",
+    "dp-accounting>=0.4",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["cardguard"]
+
+[tool.flwr.app]
+publisher = "cardguard"
+display-name = "CardGuard"
+fab-format-version = 1
+flwr-version-target = "1.39.0"
+fab-include = ["cardguard/**/*.py", "fl_weights.json", "README.md", "LICENSE"]
+
+[tool.flwr.app.components]
+agentapp = "cardguard.agentapp.agent_app:app"
+
+[tool.flwr.app.config.agent]
+decision-id = "latest"
+merchant-api = "http://127.0.0.1:4242"
+pull-timeout = 90
+trust-declared-stores = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

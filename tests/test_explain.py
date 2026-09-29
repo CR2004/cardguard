@@ -1,6 +1,6 @@
 from types import SimpleNamespace as NS
 
-from explain import explain, template
+from cardguard.decision.explain import explain, template
 
 V = {"decision": "step_up", "cites": ["amount_band=high", "country_mismatch=yes"],
      "decided_by": "rules+jev", "confidence_gated": False}

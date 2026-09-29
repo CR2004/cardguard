@@ -4,8 +4,8 @@ from types import SimpleNamespace as NS
 import numpy as np
 import pytest
 
-import fl
-from coordinator import _jev_state, decide, rules
+from cardguard.training import fl
+from cardguard.decision.coordinator import _jev_state, decide, rules
 
 LOW = {"token": "tok_abcdefghijklmnop", "amount_band": "low", "country_mismatch": "no",
        "card_funding": "credit", "cvc_check": "pass", "velocity_band": "low",

@@ -1,8 +1,8 @@
-"""Real-data checks. Skipped unless data/train_transaction.csv (or its feature cache) exists."""
+"""Real-data checks. Skipped unless datasets/train_transaction.csv (or its feature cache) exists."""
 import pytest
 
-import fl
-import fl_data
+from cardguard.training import fl
+from cardguard.data import ieee_cis as fl_data
 
 pytestmark = pytest.mark.skipif(not fl_data.available(), reason="IEEE-CIS data not present")
 

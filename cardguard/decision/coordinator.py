@@ -8,11 +8,13 @@ The final verdict is computed in code:
   - a failed card security code check is a hard decline before any vote
   - rules and Jev each vote; the more cautious verdict wins
   - an 'approve' with Jev confidence below MIN_APPROVE_CONFIDENCE becomes 'step_up'
-  - no TYPESAFE_API_KEY, or Jev errors -> rules alone decide (logged)
+  - no TYPESAFE_API_KEY, or Jev errors -> rules alone decide (the verdict records decided_by and jev_error)
 """
 from __future__ import annotations
 
 import os
+
+from cardguard.decision.guard import WireViolation, strip_for_wire
 
 SEVERITY = {"approve": 0, "step_up": 1, "decline": 2}
 MIN_APPROVE_CONFIDENCE = 0.8
@@ -32,6 +34,8 @@ WEIGHTS = {
     ("new_customer", "yes"): 1,
     # model band confirms other signals rather than double-counting them
     ("model_risk_band", "medium"): 1, ("model_risk_band", "high"): 2,
+    # the network agent's view: the same card at several merchants within minutes is card testing
+    ("network_velocity_band", "medium"): 1, ("network_velocity_band", "high"): 5,
 }
 
 FACT_MEANINGS = {
@@ -40,9 +44,35 @@ FACT_MEANINGS = {
     "card_funding": "credit, debit or prepaid card",
     "cvc_check": "whether the card security code check passed",
     "velocity_band": "purchases with this card in the last 24h",
-    "new_customer": "first purchase seen from this card",
+    "new_customer": "first time this merchant has seen this card",
     "model_risk_band": "fraud risk from a federated model trained across merchants",
+    "network_velocity_band": "how many different merchants saw this same card in the last ten minutes: low one, medium two, high three or more",
 }
+
+
+# Every reason a verdict may ever cite. explain.py drops anything else before a model sees it.
+ALLOWED_CITES = {f"{k}={v}" for (k, v) in [*WEIGHTS, *HARD_DECLINE]}
+
+
+class Verifier:
+    """Receiving-side guard for the coordinator: re-checks every incoming fact set against the
+    wire schema and scanner (never trusts the sender's guard) and accepts one per decision."""
+
+    def __init__(self):
+        self.accepted: dict[tuple, dict] = {}
+        self.rejected: list[dict] = []
+
+    def accept(self, decision_id: str, purpose: str, facts: dict) -> dict:
+        key = (decision_id, purpose)
+        try:
+            if key in self.accepted:
+                raise WireViolation("duplicate disclosure for this decision")
+            clean = strip_for_wire(facts)
+        except WireViolation as e:
+            self.rejected.append({"decision_id": decision_id, "purpose": purpose, "reason": str(e)})
+            raise
+        self.accepted[key] = clean
+        return clean
 
 
 def hard_decline(facts: dict) -> list[str]:
@@ -127,6 +157,7 @@ def _default_client():
 
 
 def decide(facts: dict, client=None) -> dict:
+    facts = strip_for_wire(facts)  # defense in depth: no unguarded value can ever reach a model
     verdict = rules(facts)
     if verdict.get("hard"):  # nothing to vote on; Jev is not even asked
         return {**verdict, "decided_by": "rules"}

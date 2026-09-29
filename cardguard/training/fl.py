@@ -1,7 +1,7 @@
 """Federated fraud model: FedAvg over merchants that never share rows.
 
-Real data (IEEE-CIS via fl_data.py, five verticals = five SuperNodes) when
-data/train_transaction.csv is present; otherwise the synthetic three merchants below,
+Real data (IEEE-CIS via cardguard.data.ieee_cis, five verticals = five SuperNodes) when
+datasets/train_transaction.csv is present; otherwise the synthetic three merchants below,
 which the offline tests use.
 
 Synthetic: three merchants, each mostly seeing ONE kind of fraud:
@@ -18,11 +18,11 @@ from __future__ import annotations
 
 import numpy as np
 
-import fl_data
+from cardguard.data import ieee_cis as fl_data
 
 # Same feature interface for synthetic and real data, and for merchant.py at checkout.
-# Amount features are relative to the merchant's own history (see fl_data.py / merchant.py).
-FEATURES = fl_data.FEATURES  # high_amount, micro_amount, country_mismatch, credit, velocity, new_customer, night
+# Amount features are relative to the merchant's own history (see cardguard.data.ieee_cis / merchant.py).
+FEATURES = fl_data.FEATURES  # 9 features: see ieee_cis.FEATURES
 MERCHANTS = ["electronics", "travel", "digital"]
 FRAUD_TYPE = {"electronics": "high_ticket", "travel": "cross_border", "digital": "card_testing"}
 
@@ -30,19 +30,21 @@ FRAUD_TYPE = {"electronics": "high_ticket", "travel": "cross_border", "digital":
 def _rows(rng, n, kind):
     """kind: 'legit' or a fraud type. Returns (n, len(FEATURES)) float array."""
     b = lambda p: (rng.random(n) < p).astype(float)
-    # columns: high_amount, micro_amount, country_mismatch, credit, velocity, new_customer, night
+    # columns: high_amount, micro_amount, country_mismatch, credit, velocity, new_customer, night,
+    #          card_age, days_since_prev   (last two: fl_data.days_feature of a day count)
+    age = lambda lo, hi: fl_data.days_feature(rng.uniform(lo, hi, n))
     if kind == "legit":
         return np.c_[b(.05), b(.05), b(.05), b(.25),
-                     np.minimum(rng.poisson(.5, n), 10) / 10, b(.3), b(.1)]
+                     np.minimum(rng.poisson(.5, n), 10) / 10, b(.3), b(.1), age(0, 365), age(0, 90)]
     if kind == "high_ticket":
         return np.c_[b(.9), b(0), b(.1), b(.6),
-                     np.minimum(rng.poisson(1, n), 10) / 10, b(.9), b(.7)]
+                     np.minimum(rng.poisson(1, n), 10) / 10, b(.9), b(.7), age(0, 120), age(0, 60)]
     if kind == "cross_border":
         return np.c_[b(.3), b(0), b(.95), b(.7),
-                     np.minimum(rng.poisson(1, n), 10) / 10, b(.6), b(.2)]
+                     np.minimum(rng.poisson(1, n), 10) / 10, b(.6), b(.2), age(0, 200), age(0, 60)]
     if kind == "card_testing":
         return np.c_[b(0), b(.98), b(.2), b(.3),
-                     np.minimum(rng.poisson(9, n), 10) / 10, b(.6), b(.3)]
+                     np.minimum(rng.poisson(9, n), 10) / 10, b(.6), b(.3), age(0, 120), age(0, 30)]
     raise ValueError(kind)
 
 
@@ -82,10 +84,12 @@ def predict_proba(w: np.ndarray, X: np.ndarray) -> np.ndarray:
 
 
 def local_train(w: np.ndarray, X: np.ndarray, y: np.ndarray,
-                epochs: int = 5, lr: float = 1.0, pos_weight: float = 10.0):
+                epochs: int = 5, lr: float = 1.0, pos_weight: float = 10.0, sample_weight=None):
     """A few epochs of full-batch gradient descent. Returns (new_weights, n_examples)."""
     w = w.copy()
     sw = np.where(y == 1, pos_weight, 1.0)  # fraud is rare; upweight it
+    if sample_weight is not None:
+        sw = sw * np.asarray(sample_weight, dtype=float)
     for _ in range(epochs):
         err = (predict_proba(w, X) - y) * sw
         grad = np.r_[err.mean(), X.T @ err / len(y)]
@@ -99,9 +103,17 @@ def fedavg(results: list[tuple[np.ndarray, int]]) -> np.ndarray:
 
 
 def auc(y: np.ndarray, p: np.ndarray) -> float:
-    order = np.argsort(p)
+    """Mann-Whitney AUC with average ranks for tied scores (banded features tie often)."""
+    order = np.argsort(p, kind="mergesort")
+    ps = p[order]
     ranks = np.empty(len(p))
-    ranks[order] = np.arange(1, len(p) + 1)
+    i = 0
+    while i < len(p):
+        j = i
+        while j + 1 < len(p) and ps[j + 1] == ps[i]:
+            j += 1
+        ranks[order[i:j + 1]] = (i + j) / 2 + 1
+        i = j + 1
     pos = y == 1
     n_pos, n_neg = pos.sum(), (~pos).sum()
     return float((ranks[pos].sum() - n_pos * (n_pos + 1) / 2) / (n_pos * n_neg))
@@ -122,9 +134,9 @@ def train_local_only(X, y, rounds: int = 30):
     return w
 
 
-# Score cuts from the real-data model: "high" is the top ~5% of scores, "medium" the next ~15%
-# (fl.py __main__ prints the quantiles; re-derive if the model changes).
-BAND_CUTS = (0.29, 0.57)
+# Score cuts from the shipped real-data model (9 features): "high" = top 5% of held-out scores,
+# "medium" = the next 15%. Re-derive from the score quantiles whenever the model changes.
+BAND_CUTS = (0.28, 0.50)
 
 
 def risk_band(p: float) -> str:

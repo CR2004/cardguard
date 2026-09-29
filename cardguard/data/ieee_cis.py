@@ -1,6 +1,6 @@
 """Real transactions for the federated fraud model: IEEE-CIS (Vesta) via Kaggle.
 
-data/train_transaction.csv is licensed under the Kaggle competition rules, is 650 MB,
+datasets/train_transaction.csv is licensed under the Kaggle competition rules, is 650 MB,
 and is git-ignored. Each ProductCD (W, C, R, H, S) is one merchant vertical = one SuperNode.
 
 Per row we derive the same kind of features merchant.py computes at checkout, each
@@ -12,6 +12,8 @@ relative to the vertical's own history (cuts come from that vertical's training 
   velocity          prior transactions by the same card proxy in the previous 24h, min(n,10)/10
   new_customer      D1 == 0: first transaction seen on this card
   night             hour of day < 6 (TransactionDT is seconds from a reference time)
+  card_age          D1, days since this card was first seen, scaled log1p(d)/log1p(365), capped at 1
+  days_since_prev   D3, days since this card's previous transaction, same scaling (0 if none)
 There is no CVC-check column, so the model has no cvc feature on real data; the coordinator's
 hard decline on cvc_check=fail covers that signal in the rules.
 
@@ -29,10 +31,19 @@ import os
 
 import numpy as np
 
-CSV = os.path.join("data", "train_transaction.csv")
-CACHE = os.path.join("data", "features.npz")
+from cardguard import ROOT
+
+CSV = str(ROOT / "datasets" / "train_transaction.csv")
+CACHE = str(ROOT / "datasets" / "features.npz")
 FEATURES = ["high_amount", "micro_amount", "country_mismatch", "credit",
-            "velocity", "new_customer", "night"]
+            "velocity", "new_customer", "night", "card_age", "days_since_prev"]
+DAY_SCALE = np.log1p(365.0)
+
+
+def days_feature(days) -> np.ndarray:
+    """Bounded [0, 1] encoding of a day count; missing/negative -> 0."""
+    d = np.nan_to_num(np.asarray(days, dtype=float), nan=0.0)
+    return np.minimum(np.log1p(np.maximum(d, 0)) / DAY_SCALE, 1.0)
 VERTICALS = ["W", "C", "R", "H", "S"]
 HOME_COUNTRY = "87.0"  # addr2 code for the platform's home country (88% of rows)
 TEST_SHARE = 0.20
@@ -43,7 +54,7 @@ def available() -> bool:
 
 
 def _read_csv():
-    """Yields (vertical, dt, amount, addr2, card6, D1, card_proxy, y) per row."""
+    """Yields (vertical, dt, amount, addr2, card6, D1, card_proxy, y, D3) per row."""
     with open(CSV, newline="") as fh:
         r = csv.reader(fh)
         cols = next(r)
@@ -53,7 +64,7 @@ def _read_csv():
                      row[ix["card5"]], row[ix["addr1"]], row[ix["P_emaildomain"]])
             yield (row[ix["ProductCD"]], int(row[ix["TransactionDT"]]),
                    float(row[ix["TransactionAmt"]]), row[ix["addr2"]], row[ix["card6"]],
-                   row[ix["D1"]], proxy, int(row[ix["isFraud"]]))
+                   row[ix["D1"]], proxy, int(row[ix["isFraud"]]), row[ix["D3"]])
 
 
 def build_cache() -> dict:
@@ -91,19 +102,30 @@ def build_cache() -> dict:
     X[:, 4] = vel
     X[:, 5] = [x[5] == "0.0" for x in rows]
     X[:, 6] = ((dt // 3600) % 24) < 6
+    X[:, 7] = days_feature([float(x[5]) if x[5] else np.nan for x in rows])
+    X[:, 8] = days_feature([float(x[8]) if x[8] else np.nan for x in rows])
 
     np.savez_compressed(CACHE, X=X, y=y, vert=vert, is_test=is_test,
                         cut_names=np.array(VERTICALS), cuts=np.array([cuts[v] for v in VERTICALS]))
+    global _LOADED
+    _LOADED = None
     return load()
 
 
+_LOADED: dict | None = None
+
+
 def load() -> dict:
-    """{'X','y','vert','is_test','cuts': {vertical: (p10, p50, p90)}}"""
+    """{'X','y','vert','is_test','cuts': {vertical: (p10, p50, p90)}}, loaded once per process."""
+    global _LOADED
+    if _LOADED is not None:
+        return _LOADED
     if not os.path.exists(CACHE):
         return build_cache()
     z = np.load(CACHE, allow_pickle=False)
     cuts = {str(k): tuple(map(float, c)) for k, c in zip(z["cut_names"], z["cuts"])}
-    return {"X": z["X"], "y": z["y"], "vert": z["vert"], "is_test": z["is_test"], "cuts": cuts}
+    _LOADED = {"X": z["X"], "y": z["y"], "vert": z["vert"], "is_test": z["is_test"], "cuts": cuts}
+    return _LOADED
 
 
 def split(data: dict, vertical: str, test: bool = False):
@@ -115,7 +137,7 @@ if __name__ == "__main__":
     d = load()
     print(f"rows {len(d['y']):,}  features {FEATURES}")
     for v in VERTICALS:
-        Xtr, ytr = split(d, v)
-        Xte, yte = split(d, v, test=True)
+        _, ytr = split(d, v)
+        _, yte = split(d, v, test=True)
         print(f"{v}: train {len(ytr):7,} (fraud {ytr.mean():.2%})  test {len(yte):6,} (fraud {yte.mean():.2%})"
               f"  amount p10/p50/p90 = ${d['cuts'][v][0]:.0f}/${d['cuts'][v][1]:.0f}/${d['cuts'][v][2]:.0f}")
