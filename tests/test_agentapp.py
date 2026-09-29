@@ -166,6 +166,9 @@ def test_launcher_reads_verdict_from_event_stream():
     calls = {}
     class Stub:
         def close(self): calls["closed"] = True
+        def ListRuns(self, request):
+            calls["waited_for"] = request.run_id
+            return NS(run_dict={request.run_id: NS(finished_at="done", status=NS(status="finished", sub_status="completed"))})
     def start_run(stub, superlink, decision_id, prompt, app_path):
         calls["start"] = (superlink, decision_id, prompt); return 7
     def events(stub, run_id):
@@ -174,6 +177,30 @@ def test_launcher_reads_verdict_from_event_stream():
         yield ("response.completed", {})
     v = launch.decide_over_flower("local-agent", "d1", client=lambda s: Stub(), start_run=start_run, events=events)
     assert v == {"decision": "approve", "decision_id": "d1"} and calls["closed"] and calls["start"][1] == "d1"
+    assert calls["waited_for"] == 7
+
+
+def test_launcher_rejects_verdict_from_run_that_did_not_complete():
+    from cardguard.agentapp import launch
+    class Stub:
+        def close(self): pass
+        def ListRuns(self, request):
+            return NS(run_dict={request.run_id: NS(finished_at="done", status=NS(status="finished", sub_status="failed"))})
+    def events(stub, run_id):
+        yield ("cardguard.verdict", {"verdict": {"decision": "approve", "decision_id": "d1"}})
+    assert launch.decide_over_flower("local-agent", "d1", client=lambda s: Stub(),
+                                    start_run=lambda *a: 7, events=events) is None
+
+
+def test_launcher_does_not_return_emitted_verdict_before_run_finishes():
+    from cardguard.agentapp import launch
+    class Stub:
+        def close(self): pass
+        def ListRuns(self, request): return NS(run_dict={})
+    def events(stub, run_id):
+        yield ("cardguard.verdict", {"verdict": {"decision": "approve", "decision_id": "d1"}})
+    assert launch.decide_over_flower("local-agent", "d1", timeout=0.05,
+                                    client=lambda s: Stub(), start_run=lambda *a: 7, events=events) is None
 
 
 def test_launcher_never_raises_and_times_out():

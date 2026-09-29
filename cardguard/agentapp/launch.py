@@ -10,6 +10,7 @@ from __future__ import annotations
 import functools
 import logging
 import threading
+import time
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
@@ -104,6 +105,17 @@ def _client(superlink: str):
     return init_http_client_from_connection(read_superlink_connection(superlink))
 
 
+def _wait_for_completed_run(stub, run_id: int, deadline: float) -> bool:
+    """A verdict event precedes task teardown; wait until series state is committed."""
+    from flwr.proto.control_pb2 import ListRunsRequest
+    while time.monotonic() < deadline:
+        run = stub.ListRuns(ListRunsRequest(run_id=run_id)).run_dict.get(run_id)
+        if run is not None and run.finished_at:
+            return run.status.status == "finished" and run.status.sub_status == "completed"
+        time.sleep(0.2)
+    return False
+
+
 def decide_over_flower(superlink: str, decision_id: str, timeout: float = 240.0,
                        prompt: str = DEFAULT_PROMPT, app_path: str = str(ROOT), overrides: tuple = (),
                        client: Callable[[str], Any] = _client, start_run=_start_run, events=_events,
@@ -125,6 +137,7 @@ def decide_over_flower(superlink: str, decision_id: str, timeout: float = 240.0,
     def worker() -> None:
         stub = None
         try:
+            deadline = time.monotonic() + timeout
             stub = client(superlink)
             run_id = start_run(stub, superlink, decision_id, prompt, app_path, overrides) if overrides else \
                 start_run(stub, superlink, decision_id, prompt, app_path)
