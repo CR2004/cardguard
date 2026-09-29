@@ -21,7 +21,7 @@ import numpy as np
 from cardguard.data import ieee_cis
 from cardguard.specialists import data as sdata
 from cardguard.specialists.features import FAMILIES, build_families
-from cardguard.specialists.model import (auc, band_cuts, fit_logistic, logit, predict,
+from cardguard.specialists.model import (MODELS, auc, band_cuts, fit_logistic, fit_model, logit, predict,
                                          recall_at_top, to_bands)
 
 FIT_SHARE = 0.70
@@ -51,7 +51,7 @@ def _stack_matrix(scores, cov, stack, mode, drop=None):
     return np.column_stack(cols).astype(float)
 
 
-def run(fam: dict, epochs: int = 300) -> dict:
+def run(fam: dict, epochs: int = 300, model: str = "logistic") -> dict:
     y = fam["y"]
     fit, stack, test = _split(fam)
     scores, cov, single = {}, {}, {}
@@ -60,14 +60,13 @@ def run(fam: dict, epochs: int = 300) -> dict:
         X, c = f["X"], f["covered"]
         if (fit & c).sum() < MIN_ROWS or y[fit & c].sum() < MIN_FRAUD:
             continue
-        w = fit_logistic(X[fit & c], y[fit & c], epochs=epochs)
-        p = predict(w, X)
+        p = fit_model(model, X[fit & c], y[fit & c], epochs=epochs).predict(X)
         scores[name], cov[name] = p, c
         shown = np.where(c, p, np.median(p[fit & c]))  # abstaining rows tie at a neutral score
         single[name] = {"auc": auc(y[test], shown[test]), "recall5": recall_at_top(y[test], shown[test]),
                         "coverage": float(c[test].mean())}
 
-    out = {"single": single, "features": {n: len(fam["families"][n]["names"]) for n in scores}}
+    out = {"model": model, "single": single, "features": {n: len(fam["families"][n]["names"]) for n in scores}}
 
     def stacked(mode, drop=None):
         S = _stack_matrix(scores, cov, stack, mode, drop)
@@ -79,21 +78,20 @@ def run(fam: dict, epochs: int = 300) -> dict:
     out["ablation"] = {f"without_{n}": stacked("scores", drop=n)["auc"] for n in scores}
 
     Xall = np.hstack([fam["families"][n]["X"] for n in scores])  # same columns, one model, no privacy split
-    w = fit_logistic(Xall[fit], y[fit], epochs=epochs)
-    p = predict(w, Xall)
+    p = fit_model(model, Xall[fit], y[fit], epochs=epochs).predict(Xall)
     out["pooled_all_features"] = {"auc": auc(y[test], p[test]), "recall5": recall_at_top(y[test], p[test])}
 
     if not os.environ.get("SPECIALISTS_SKIP_BASELINE") and ieee_cis.available():
         d = ieee_cis.load()
         if len(d["y"]) == len(y) and np.array_equal(d["is_test"], fam["is_test"]):
-            w = fit_logistic(d["X"][fit], y[fit], epochs=epochs)
-            p = predict(w, d["X"])
+            p = fit_model(model, d["X"][fit], y[fit], epochs=epochs).predict(d["X"])
             out["current_9_features"] = {"auc": auc(y[test], p[test]), "recall5": recall_at_top(y[test], p[test])}
     return out
 
 
 def report(res: dict) -> str:
-    L = [f"{'model':30s}{'AUC':>8s}{'catch@5%':>10s}{'coverage':>10s}{'#feat':>7s}"]
+    L = [f"specialist model: {res['model']}; the stacker is always logistic\n",
+         f"{'model':30s}{'AUC':>8s}{'catch@5%':>10s}{'coverage':>10s}{'#feat':>7s}"]
     for name, r in sorted(res["single"].items(), key=lambda kv: -kv[1]["auc"]):
         L.append(f"{'specialist: ' + name:30s}{r['auc']:8.3f}{r['recall5']:10.3f}{r['coverage']:10.2f}"
                  f"{res['features'][name]:7d}")
@@ -130,6 +128,7 @@ def main() -> None:
     ap.add_argument("--synthetic", action="store_true", help="offline demo data, six fraud types")
     ap.add_argument("--rebuild", action="store_true", help="ignore the feature cache")
     ap.add_argument("--epochs", type=int, default=300)
+    ap.add_argument("--model", choices=MODELS, default="logistic", help="what each specialist is")
     ap.add_argument("--limit", type=int, help="read only the first N CSV rows (no cache)")
     a = ap.parse_args()
     if a.synthetic:
@@ -145,7 +144,7 @@ def main() -> None:
         raise SystemExit(f"{sdata.TX_CSV} not found. Put train_transaction.csv (and train_identity.csv) "
                          "in datasets/, or run with --synthetic.")
     print(f"rows {len(fam['y']):,}  fraud {fam['y'].mean():.2%}  test rows {int(fam['is_test'].sum()):,}\n")
-    print(report(run(fam, epochs=a.epochs)))
+    print(report(run(fam, epochs=a.epochs, model=a.model)))
 
 
 if __name__ == "__main__":

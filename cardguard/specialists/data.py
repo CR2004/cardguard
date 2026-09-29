@@ -25,9 +25,10 @@ CACHE = str(ROOT / "datasets" / "specialist_features.npz")  # git-ignored with t
 
 C_COLS = [f"C{i}" for i in range(1, 15)]
 M_COLS = [f"M{i}" for i in range(1, 10)]
+D_EXTRA = ["D2", "D4", "D5", "D10", "D11", "D15"]  # day-gap columns beyond D1/D3 (history timing)
 NUM_COLS = ["TransactionDT", "TransactionAmt", "addr1", "addr2", "dist1", "dist2", "D1", "D3",
-            "card1", "card2", "card3", "card5", *C_COLS]
-CAT_COLS = ["ProductCD", "card6", "P_emaildomain", "R_emaildomain", *M_COLS]
+            "card1", "card2", "card3", "card5", *C_COLS, *D_EXTRA]
+CAT_COLS = ["ProductCD", "card6", "card4", "P_emaildomain", "R_emaildomain", *M_COLS]
 
 
 def available() -> bool:
@@ -148,10 +149,11 @@ def read_transactions(path: str = TX_CSV, limit: int | None = None) -> dict:
         "D1": col("D1"), "D3": col("D3"),
         "card": num[:, [NUM_COLS.index(c) for c in ("card1", "card2", "card3", "card5")]],
         "C": num[:, [NUM_COLS.index(c) for c in C_COLS]],
-        "prod": cc("ProductCD"), "card6": cc("card6"), "pemail": cc("P_emaildomain"),
+        "D": num[:, [NUM_COLS.index(c) for c in D_EXTRA]],
+        "prod": cc("ProductCD"), "card6": cc("card6"), "card4": cc("card4"), "pemail": cc("P_emaildomain"),
         "remail": cc("R_emaildomain"), "M": cat[:, [CAT_COLS.index(c) for c in M_COLS]],
-        "vocab": {"prod": words[0], "card6": words[1], "pemail": words[2], "remail": words[3],
-                  "M": words[4:]},
+        "vocab": {"prod": words[0], "card6": words[1], "card4": words[2], "pemail": words[3],
+                  "remail": words[4], "M": words[5:]},
         "has_identity": np.zeros(len(txid), dtype=bool), "ident": np.zeros((len(txid), len(IDENT_NAMES))),
     }
 
@@ -222,9 +224,13 @@ def synthetic_raw(n: int = 12000, seed: int = 0) -> dict:
     return {
         "txid": np.arange(n), "y": (kind > 0).astype(float), "dt": dt, "amt": amt,
         "addr1": a1, "addr2": a2, "dist1": dist1, "dist2": np.full(n, np.nan), "D1": d1, "D3": d3,
-        "card": card, "C": C, "prod": rng.integers(0, 5, n), "card6": (rng.random(n) < 0.25).astype(int),
+        "card": card, "C": C, "D": np.where(rng.random((n, len(D_EXTRA))) < 0.4, np.nan,
+                                            rng.exponential(15, (n, len(D_EXTRA)))),
+        "prod": rng.integers(0, 5, n), "card6": (rng.random(n) < 0.25).astype(int),
+        "card4": rng.integers(0, 3, n),
         "pemail": pe.astype(int), "remail": re_.astype(int), "M": M,
         "vocab": {"prod": ["W", "C", "R", "H", "S"], "card6": ["debit", "credit"],
+                  "card4": ["visa", "mastercard", "discover"],
                   "pemail": [f"mail{i}.com" for i in range(8)], "remail": [f"mail{i}.com" for i in range(12)],
                   "M": [["T", "F"] for _ in M_COLS]},
         "has_identity": has, "ident": ident,

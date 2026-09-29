@@ -1,0 +1,4 @@
+# Only for cardguard.specialists.experiment --model lgbm. Kept out of requirements.txt so the
+# demo and AgentApp environments are unchanged.
+scikit-learn>=1.5
+lightgbm>=4.5

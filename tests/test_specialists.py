@@ -109,3 +109,17 @@ def test_stack_beats_every_single_specialist(fam, monkeypatch):
     assert r["single"]["device"]["coverage"] < 0.4
     assert set(r["ablation"]) == {f"without_{n}" for n in r["single"]}
     assert "STACK (scores)" in experiment.report(r)
+
+
+def test_unknown_model_is_rejected():
+    from cardguard.specialists.model import fit_model
+    with pytest.raises(ValueError):
+        fit_model("forest", np.zeros((10, 2)), np.zeros(10))
+
+
+def test_lgbm_specialists_run_and_stack_still_wins(fam, monkeypatch):
+    pytest.importorskip("lightgbm")
+    monkeypatch.setenv("SPECIALISTS_SKIP_BASELINE", "1")
+    r = experiment.run(fam, epochs=100, model="lgbm")
+    assert r["model"] == "lgbm"
+    assert r["stack_scores"]["auc"] > max(v["auc"] for v in r["single"].values()) + 0.03

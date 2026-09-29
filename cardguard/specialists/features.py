@@ -19,11 +19,12 @@ import math
 import numpy as np
 
 from cardguard.data.ieee_cis import days_feature
-from cardguard.specialists.data import IDENT_NAMES
+from cardguard.specialists.data import D_EXTRA, IDENT_NAMES
 
 FAMILIES = ["transaction", "identity", "device", "geo", "behavior", "merchant", "network"]
 TEST_SHARE = 0.20  # same time holdout as cardguard.data.ieee_cis
 HOME_COUNTRY = 87.0
+D_EXTRA_NUMS = [c[1:] for c in D_EXTRA]
 HIST = ["velocity", "has_hist", "amt_dev", "hour_unusual", "new_product", "prior_count",
         "loc_known", "loc_shift", "emails_per_card", "cards_per_pair", "cards_per_email",
         "cards_per_remail"]
@@ -163,6 +164,7 @@ def build_families(raw: dict) -> dict:
 
     add("transaction", [("amt_pct", pct), ("high_amount", high), ("micro_amount", micro),
                         ("round_1", amt == np.floor(amt)), ("round_10", amt % 10 == 0),
+                        ("subcent", np.abs(amt * 100 - np.round(amt * 100)) > 1e-6),  # currency-converted
                         *[(f"C{j + 1}", _log_scale(raw["C"][:, j], _cap(raw["C"][:, j], train)))
                           for j in range(raw["C"].shape[1])],
                         ("velocity", h["velocity"])])
@@ -174,7 +176,8 @@ def build_families(raw: dict) -> dict:
     add("identity", [("p_missing", pe < 0), ("r_missing", re_ < 0), ("email_match", match),
                      ("p_rarity", _rarity(pe, train)), ("credit", raw["card6"] == credit),
                      ("card_age", days_feature(d1)), ("new_customer", d1 == 0),
-                     ("d1_missing", np.isnan(d1)), *m_cols])
+                     ("d1_missing", np.isnan(d1)), *m_cols,
+                     *[(f"card4={w}", raw["card4"] == j) for j, w in enumerate(voc["card4"][:4])]])
 
     has = raw["has_identity"]
     add("device", [("has_identity", has), *[(nm, raw["ident"][:, j]) for j, nm in enumerate(IDENT_NAMES)]],
@@ -192,7 +195,9 @@ def build_families(raw: dict) -> dict:
     add("behavior", [("night", ((dt // 3600) % 24) < 6), ("hour_unusual", h["hour_unusual"]),
                      ("has_hist", h["has_hist"]), ("amt_dev", h["amt_dev"]),
                      ("new_product", h["new_product"]), ("days_since_prev", days_feature(d3)),
-                     ("d3_missing", np.isnan(d3)), ("prior_count", cnt("prior_count"))])
+                     ("d3_missing", np.isnan(d3)), ("prior_count", cnt("prior_count")),
+                     *[(f"D{k}", days_feature(raw["D"][:, j])) for j, k in enumerate(D_EXTRA_NUMS)],
+                     *[(f"D{k}_missing", np.isnan(raw["D"][:, j])) for j, k in enumerate(D_EXTRA_NUMS)]])
 
     add("merchant", [*[(f"product={w}", raw["prod"] == j) for j, w in enumerate(voc["prod"])],
                      ("r_missing", re_ < 0), ("r_rarity", _rarity(re_, train))])
