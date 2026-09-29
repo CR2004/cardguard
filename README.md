@@ -30,8 +30,8 @@ merchant startup; UI polish; Flower Hub publish; backup video; pitch.
 identity, geography, behavior), are trained with FedAvg across the five merchants, fine-tuned locally, and stacked
 into one new fact, `specialist_stack_band`, that the merchant node adds when `specialist_weights.json` exists.
 Honest result: with only the features a checkout can compute, the stack is on par with the current model
-(AUC about 0.77); the large gain (0.866) needs columns the dataset's processor engineered. Details, the live
-wiring and the human-in-the-loop plan: [Fraud specialists](#fraud-specialists-experiment-branch-specialists-experiment).
+(AUC about 0.77); the large gain (0.866) needs columns the dataset's processor engineered. The human-in-the-loop upgrades are merged too (soft declines get a second look; structured, audited human
+opinions; persisted labels). Details, the live wiring and the plan: [Fraud specialists](#fraud-specialists-experiment-branch-specialists-experiment).
 
 ## Quick start
 
@@ -136,8 +136,9 @@ available (`FL_DP_NOISE=1.0`): epsilon about 40 at delta 1e-5 over 30 rounds, co
 
 ## Fraud specialists experiment (branch `specialists-experiment`)
 
-**Status: offline experiment on real data. Nothing here is wired into the demo, the wire schema or the
-coordinator, and the live pipeline (`fl.FEATURES`, `fl_weights.json`, `merchant.py`, `BAND_CUTS`) is unchanged.**
+**Status: the live-computable slice is wired into the merchant node (see "What is wired into the live node");
+everything measured with dataset-only columns is an offline experiment. The rest of the live pipeline
+(`fl.FEATURES`, `fl_weights.json`, `BAND_CUTS`) is unchanged.**
 
 ### The idea
 Today's federation is *horizontal*: every merchant has the same 9 features on different transactions, and
@@ -214,30 +215,41 @@ The same experiment with plain logistic-regression specialists (no extra depende
   Identity 0.863 (-0.002), Device 0.864 (-0.002), Merchant, Network and Geo 0.866 (no change). **Transaction does
   most of the work; Transaction, Behavior and Identity carry nearly all of the gain.**
 
-### The catch: most of the gain needs columns a live checkout does not have
+### The catch: the big gain needs columns a live checkout does not have
 
 The table above uses every column the dataset offers. Many of them (`C1-C14` counts, `D` timedeltas, `M` match
 flags, payer/recipient email, `addr1`/`dist1`, the device-recognition flags) were engineered by the payment
-processor that produced the data. Our checkout collects none of them. So we re-ran the same experiment with
-`--deployable`: each specialist may only use features the merchant node can compute from what it already holds
-(the amount, its own per-card history, the buyer country, the clock, its own vertical). The Device and Network
-specialists have no such feature and drop out.
+processor that produced the data. Our checkout collects none of them. So `--deployable` restricts each specialist
+to features the merchant node can really compute at checkout:
 
-| Model (checkout-computable features only) | LightGBM AUC | Catch at 5% | Logistic AUC | Catch at 5% |
+| Specialist | Live features |
+|---|---|
+| Transaction | amount above / below this merchant's 90th / 10th percentile, whole-dollar and whole-ten-dollar amounts, 24 h velocity |
+| Identity | credit card, card age, first time this merchant sees the card |
+| Geo | card country differs from the buyer's country |
+| Behavior | night hour, hour unusual for this card, history length, amount deviation from this card's habit, days since previous |
+
+Left out because they could never vary at our checkout: a sub-cent amount flag (amounts arrive as integer cents), a
+new-product flag and the merchant family (a node sells under one product), and the Device and Network specialists
+(no live inputs). **Correction:** an earlier version of this section reported a +0.014 AUC gain. It included the
+sub-cent and new-product flags. Without them, the numbers are:
+
+| Model (live-computable features only) | LightGBM AUC | Catch at 5% | Logistic AUC | Catch at 5% |
 |---|---|---|---|---|
 | Current 9-feature model | 0.773 | 21% | 0.772 | 23% |
-| Best single specialist (Transaction) | 0.748 | 22% | 0.748 | 21% |
-| **Stack (scores)** | **0.787** | **25%** | **0.783** | **23%** |
-| **Stack (bands only)** | **0.763** | **27%** | **0.758** | **24%** |
-| Pooled, one model | 0.792 | 24% | 0.786 | 22% |
+| Best single specialist (Identity) | 0.675 | 15% | 0.677 | 15% |
+| **Stack (scores)** | **0.772** | **26%** | **0.769** | **21%** |
+| **Stack (bands only)** | **0.755** | **25%** | **0.750** | **27%** |
+| Pooled, one model | 0.790 | 25% | 0.786 | 22% |
 
-Leave-one-out (LightGBM stack): without Transaction 0.765, Identity 0.775, Behavior 0.780, Merchant 0.785,
-Geo 0.787. Behavior falls back to AUC 0.65 because the `D` timedeltas that lifted it are not available.
+Leave-one-out (LightGBM stack, 0.772): without Geo 0.731, Identity 0.755, Transaction 0.759, Behavior 0.762.
 
 **How to read this**
-- With inputs a checkout can compute, the stack is only about **+0.014 AUC** over the current model, and the version
-  that ships only bands is **-0.010 AUC** (though it catches slightly more in the top 5%). That is roughly
-  break-even, not an improvement worth wiring into the live path.
+- With inputs a checkout can compute, the stack is **level with the current model** (0.772 against 0.773), and the
+  bands-only version is about 0.02 AUC lower, though it catches slightly more in the top 5%. There is no accuracy
+  gain from this design on the features we have.
+- Geo matters most in this table, but it is one feature (`country_mismatch`) whose pooled power mostly encodes
+  *which merchant* a row came from. It is exactly the feature that fails under FedAvg (see below).
 - The 0.09 AUC gain in the full-feature table comes from **richer inputs**, not from the specialist topology. This
   matches the earlier finding in this README that the level is bounded by the features, not the model.
 - The specialist idea is worth most where different parties really do hold different signal families (a device
@@ -273,29 +285,38 @@ R 27,462 / 257; H 26,073 / 197; S 6,003 / 183.
 | **federated (FedAvg)** | **0.840** | **40%** | **0.784** | **0.841** | **0.825** | **0.526** | **0.912** |
 | personalised | 0.844 | 38% | 0.782 | 0.855 | 0.850 | 0.488 | 0.920 |
 
-**Stack of scores, checkout-computable features only** (`--deployable`):
+**Stack of scores, live-computable features only** (`--deployable`):
 
 | Specialists trained | All | Catch at 5% | W | H | C | S | R |
 |---|---|---|---|---|---|---|---|
-| central (pooled) | 0.783 | 23% | 0.741 | 0.519 | 0.626 | 0.404 | 0.558 |
-| local (alone) | 0.794 | 23% | 0.763 | 0.578 | 0.621 | 0.364 | 0.676 |
-| **federated (FedAvg)** | **0.777** | **17%** | **0.758** | **0.517** | **0.609** | **0.383** | **0.559** |
-| personalised | 0.790 | 20% | 0.761 | 0.549 | 0.621 | 0.384 | 0.639 |
+| central (pooled) | 0.769 | 21% | 0.718 | 0.531 | 0.630 | 0.394 | 0.584 |
+| local (alone) | 0.795 | 23% | 0.763 | 0.568 | 0.621 | 0.363 | 0.678 |
+| **federated (FedAvg)** | **0.749** | **14%** | **0.754** | **0.518** | **0.613** | **0.386** | **0.551** |
+| personalised | 0.786 | 20% | 0.761 | 0.537 | 0.622 | 0.384 | 0.624 |
 
-Stacks of bands only (all columns): central 0.815, local 0.830, federated 0.829, personalised 0.819; with
-checkout-computable features: 0.758, 0.744, 0.778, 0.771. These are within noise of each other.
+**Stack of bands only, live-computable features** (the version the live node uses, since only bands are ever
+stacked there):
+
+| Specialists trained | All | Catch at 5% | W | H | C | S | R |
+|---|---|---|---|---|---|---|---|
+| central (pooled) | 0.750 | 27% | 0.685 | 0.505 | 0.651 | 0.390 | 0.578 |
+| local (alone) | 0.744 | 21% | 0.669 | 0.504 | 0.622 | 0.502 | 0.653 |
+| **federated (FedAvg)** | **0.776** | **19%** | **0.734** | **0.606** | **0.599** | **0.344** | **0.621** |
+| **personalised (FedAvg + fine-tune)** | **0.774** | **25%** | **0.717** | **0.548** | **0.623** | **0.525** | **0.647** |
+
+Stacks of bands only with all dataset columns: central 0.815, local 0.830, federated 0.829, personalised 0.819.
 
 **Single specialists, overall AUC, pooled versus FedAvg:**
 
-| Specialist | All columns: central -> federated | Checkout-only: central -> federated |
+| Specialist | All columns: central -> federated | Live-computable: central -> federated |
 |---|---|---|
-| Transaction | 0.830 -> 0.810 | 0.748 -> 0.557 |
+| Transaction | 0.830 -> 0.810 | 0.640 -> 0.567 |
 | Identity | 0.781 -> 0.770 | 0.677 -> 0.653 |
 | Behavior | 0.765 -> 0.680 | 0.665 -> 0.615 |
-| Network | 0.710 -> 0.635 | (no checkout feature) |
-| Merchant | 0.694 -> 0.685 | 0.694 -> 0.674 |
+| Network | 0.710 -> 0.635 | (no live feature) |
+| Merchant | 0.694 -> 0.685 | (constant on a node) |
 | Geo | 0.685 -> **0.470** | 0.656 -> **0.344** |
-| Device | 0.664 -> 0.654 | (no checkout feature) |
+| Device | 0.664 -> 0.654 | (no live feature) |
 
 **What this shows, without flattering the federation**
 - **The specialist split survives federation overall.** With all columns the federated stack scores 0.840 against
@@ -307,8 +328,9 @@ checkout-computable features: 0.758, 0.744, 0.778, 0.771. These are within noise
 - **Small merchants are the real beneficiary, and only pooling fully helps them.** S goes 0.490 alone, 0.526
   federated, 0.639 pooled. S has 183 fraud cases in its test period, so differences of a few hundredths for S and
   H are within noise.
-- **Personalising did not rescue it** with these settings (0.844, still under alone at 0.852). The fine-tune
-  step was not tuned.
+- **Personalising did not rescue it with all columns** (0.844, still under alone at 0.852; the fine-tune step
+  was not tuned). With the live-computable bands the node stacks it did help: see "What is wired into the live
+  node".
 - **A feature that means different things at different merchants breaks under FedAvg.** Geo's only
   checkout-computable feature, `country_mismatch`, shows why. At C, 99.8% of transactions are mismatches and
   every match is legitimate. At W (232k rows) a mismatch is rare and *less* fraudulent than average. Local weights
@@ -316,15 +338,16 @@ checkout-computable features: 0.758, 0.744, 0.778, 0.771. These are within noise
   becomes -0.38, while the pooled model gets +1.58 because it can see that mismatches cluster in the fraud-heavy
   merchant. That is a between-merchant effect that no single merchant can see, so the pooled specialist AUCs
   in the earlier tables are partly flattered by merchant mix.
-- **Catch at 5% falls more than AUC** under FedAvg with checkout-only features (23% pooled, 17% federated).
+- **Catch at 5% falls more than AUC** under FedAvg when scores are stacked (21% pooled, 14% federated); with the
+  bands the live node stacks it is 19% for FedAvg and 25% for FedAvg + fine-tune.
 
 **What it means for the design**
 1. The vertical split does not need merchant-level averaging to work: it costs about 0.006 AUC to keep rows local.
 2. Apply merchant-level FedAvg selectively. With all columns it costs little for signals with a stable meaning
    across merchants (Transaction, Identity, Device lose 0.010-0.019) and a lot for signals tied to a merchant's
-   own mix (Geo, Behavior, Network lose 0.075-0.216). Even Transaction is not safe when reduced to checkout-only
-   features: it loses 0.19 there, because its sub-cent flag mostly tracks which merchant a row came from. Give
-   merchant-specific signals a per-merchant model, or leave them to the party that owns them.
+   own mix (Geo, Behavior, Network lose 0.075-0.216). Even Transaction loses 0.074 when reduced to the live-computable
+   features (0.640 to 0.567). Give merchant-specific signals a per-merchant model, or leave them to the party
+   that owns them.
 3. Where FedAvg pays is the smallest merchants, as before. Do not claim it beats a merchant training alone
    in general.
 
@@ -347,7 +370,7 @@ checkout-computable features: 0.758, 0.744, 0.778, 0.771. These are within noise
 - **No "each specialist catches something the others miss" story.** On real data one specialist dominates. The
   honest claim is that the stack beats the current model while no specialist sees another's columns, not that
   every specialist is needed.
-- **Not deployable as is.** Most of the gain uses dataset columns our checkout does not collect (see "The catch"). The banded stack also needs its cut points re-derived whenever a specialist changes.
+- **Only the live-computable slice is deployed.** Most of the gain uses dataset columns our checkout does not collect (see "The catch"). The banded stack also needs its cutoffs re-derived whenever a specialist changes (`export` does this).
 - Wording: this narrows what any one agent sees. It does not make anything "PCI compliant".
 
 ### Run it
@@ -358,22 +381,58 @@ python -m cardguard.specialists.experiment                      # real data, ~2 
 python -m cardguard.specialists.experiment --model lgbm         # LightGBM specialists, ~1.5 min
 python -m cardguard.specialists.experiment --deployable         # only checkout-computable features
 python -m cardguard.specialists.experiment --federated          # FedAvg across the 5 merchants, 4 training modes (several minutes)
+python -m cardguard.specialists.export                          # train the live specialists -> specialist_weights.json
+python -m cardguard.specialists.export --mode federated         # the same with plain FedAvg (no local fine-tune)
 python -m cardguard.specialists.experiment --rebuild            # ignore datasets/specialist_features.npz
 python -m cardguard.specialists.experiment --limit 50000        # quick look at the first 50k rows
-python -m pytest tests/test_specialists.py -q                   # 14 tests, offline
+python -m pytest tests/test_specialists.py tests/test_specialists_live.py -q   # 26 tests, offline
 ```
 Needs `datasets/train_transaction.csv` and `datasets/train_identity.csv` (the `test_*` files have no labels and
 are not used). Synthetic mode is a wiring check only: its fraud types are built so each is visible to one
 specialist, so its numbers say nothing about real performance.
 
-### What is integrated today (checked against the code)
+### What is wired into the live node (and what is not)
 
-| Question | Answer | Where |
-|---|---|---|
-| Does any live code import the specialists? | No. It is an offline package plus tests. | `cardguard/specialists/` |
-| How does the federated model reach a decision now? | FedAvg -> `fl_weights.json` -> merchant scores 9 checkout features -> one `model_risk_band` -> coordinator adds +1 (medium) or +2 (high) to a rules score | `flower_app.py:71`, `merchant.py:171,454-459`, `coordinator.py:36` |
-| What may cross a node boundary? | 8 closed-vocabulary facts. No specialist key exists. | `guard.py:18-28` |
-| Can several nodes answer one decision? | No: the coordinator accepts one fact set per `(decision_id, purpose)`, and two nodes answering is a conflict that goes to human review | `coordinator.py:65-75`, invariant 1a |
+**Wired in (branch `specialists-experiment`).** Four one-signal-family models (transaction, identity, geo, behavior)
+score every checkout on the merchant node and become one new banded fact.
+
+```
+python -m cardguard.specialists.export        offline: FedAvg across the 5 merchants, then local fine-tune,
+   |                                          stack the four bands  ->  specialist_weights.json (6 KB, weights only)
+   v
+merchant.py loads it at startup for its own MERCHANT_VERTICAL   (SPECIALIST_WEIGHTS=none disables; absent = old behaviour)
+   v  each checkout: 16 features from state the node already holds + per-card history (bounded, 20k cards)
+four specialists -> four bands (kept in the local audit note only) -> logistic stack -> specialist_stack_band
+   v
+guard.WIRE_SCHEMA (a 9th closed-vocabulary fact) -> coordinator: +1 medium / +2 high, Jev sees it -> verdict in code
+```
+
+- **Why FedAvg + fine-tune (personalised).** With the bands the node actually stacks, both are tied on pooled AUC
+  (0.774 against 0.776), but fine-tuning catches more in the top 5% (25% against 19%) and wins at the merchants
+  where FedAvg hurts (C 0.623 against 0.599, S 0.525 against 0.344, R 0.647 against 0.621). Plain FedAvg is still
+  available: `export --mode federated`.
+- **Exported model, measured on the test period** (personalised): pooled AUC 0.774 from the stack score, 0.708 from
+  the three-level band, top-5% catch 24.8%; by merchant W 0.718, H 0.548, C 0.623, S 0.525, R 0.647.
+- **Band cutoffs are shared, not per merchant.** Per-merchant cutoffs force about 5% "high" everywhere and erase that
+  fraud rates differ about five times across merchants: pooled AUC fell from 0.77 to 0.59 when tried. With one
+  set of cutoffs "high" means the same absolute risk at every merchant, like the existing `model_risk_band`.
+- **Only one band crosses the wire.** `specialist_stack_band` is the only new fact (invariant 2). The four
+  per-specialist bands stay in the ledger's local note so a reviewer can see *which* signal family fired.
+  No new Grid roles, so invariant 1a (one reply per decision) is untouched.
+- **Fails safe.** A missing, unreadable or non-validating file (wrong features, non-finite weights) disables the
+  specialists and the node decides exactly as before (invariant 5). Tests cover each case, plus exact parity
+  between the live history features and the training ones.
+- **Regenerate:** `python -m cardguard.specialists.export` (needs the datasets and the feature cache, about 4 min).
+
+**What this buys, honestly.** On the features a checkout has, the stack is level with the current model (about 0.77),
+so the wiring adds explainability (per-family bands in the audit), a per-merchant fine-tune and the plumbing for
+richer signals, not accuracy. Known risks: `specialist_stack_band` partly overlaps `model_risk_band` and both add
+to the score (kept at the same weight so neither dominates); the behavior features need per-card history, so a
+freshly started node scores them near zero; training's `country_mismatch` means "billing country missing or not the
+home country", while live it means "card country differs from the buyer's country".
+
+**Not built:** separate specialist nodes on the Grid (needs invariant 1a reworked); broadcasting a human label to
+the specialists (the label already stores its decision id for this); a replay demo on real transactions.
 
 ### If the specialists win: what the federated learning becomes
 
@@ -403,80 +462,65 @@ There are two independent ways to split fraud data, and the design uses both:
   Behavior or Network.
 - **Model type matters.** FedAvg needs models that are weight vectors (logistic regression, small nets). LightGBM
   trees cannot be averaged that way (Flower has tree strategies in some versions; not checked for 1.39, so treat
-  as unverified). The measurements say this costs little: with checkout-computable features logistic scores 0.783
-  against LightGBM 0.787, and with all columns 0.846 against 0.866. Use logistic where FedAvg runs, and LightGBM
+  as unverified). The measurements say this costs little: with live-computable features logistic scores 0.769
+  against LightGBM 0.772, and with all columns 0.846 against 0.866. Use logistic where FedAvg runs, and LightGBM
   only for a specialist held by a single party.
 - **The stacker.** It needs the specialists' bands and the true label for the same transactions, joined on a
   pseudonymous `decision_id`. It is a handful of weights, kept as JSON (Flower Hub accepts `.json`, not model files).
 - **Labels flow back by `decision_id`.** A human verdict is broadcast to every specialist; each stores
   (its own features, label) locally and never sees another specialist's features.
 
-### Human in the loop: what exists (verified) and what is missing
+### Human in the loop: what was missing, and what is now implemented
 
-**Already there, with tests:**
-- **Review queue.** A `step_up` verdict (rules score 3-7, or Jev says step_up, or Jev's confidence in an approve is
-  too low) holds the payment in a queue (`merchant.py:555-559`, `coordinator.py:89,172`). Unreviewed items are voided
-  after one hour, so it fails closed (`merchant.py:355`).
-- **Only a credentialed human moves money.** Approve or decline needs the reviewer token (`merchant.py:573`; test:
-  `test_merchant.py:62`). The reviewer sees banded facts and the verdict, never card data (`test_merchant.py:101`).
-- **The human's decision becomes a label** (approve = 0, decline = 1), stays on the node (`merchant.py:580`), and
-  chargebacks add fraud labels (`merchant.py:597-607`); a dispute-evidence agent drafts a response a human approves.
-- **Labels retrain the federated model.** `/agent/retrain` runs a federated round with each human label weighted 50
-  ordinary rows, then fine-tunes locally, and reports the band before and after (`retrain.py`,
-  `merchant.py:657-674`; tests: `test_retrain.py`, `test_review_fixes.py`).
+Before this work a `step_up` verdict went to a review queue (void after one hour, reviewer token to act, the
+decision became a local label, a federated round could retrain on the labels). Checked against the code, six gaps
+stood between that and "once classified as fraud, add a human opinion". They were closed by a subagent working in an
+isolated worktree, then merged and checked here (13 new tests in `tests/test_human_review.py`). The behaviour and
+its environment variables are documented in **Human in the loop: what is implemented** below.
 
-**Gaps against "once classified as fraud, add a human opinion":**
-
-| # | Gap | Evidence |
+| # | Gap found | Status |
 |---|---|---|
-| G1 | A `decline` is final: no human ever sees it. "Fraud" is not a separate stage, only a weighted vote (a `high` model band alone adds just +2, below the step_up threshold of 3). | `merchant.py:560`, `coordinator.py:36,89` |
-| G2 | Human labels live in an in-memory list: lost on restart, not persisted. | `merchant.py:269,360` |
-| G3 | The human gives only approve/decline: no reason, no reviewer identity, and the human's opinion itself is not recorded in the audit chain (only the payment settlement that follows it). | `merchant.py:571-588` |
-| G4 | Retraining is manual and per node; labels are the 9 current features, so they cannot train the specialists. | `retrain.py`, `merchant.py:657` |
-| G5 | No tracking of human-versus-model disagreement, so nobody can see false positives or how often the model is overruled. | not implemented |
-| G6 | `GET /reviews` needs no credential (it shows banded facts only). Acting on a review does need one. Decide if that is intended. | `merchant.py:564` |
+| G1 | A `decline` was final: no human saw it, so "fraud" was only a weighted vote | **Done.** A soft decline is a second look in the same queue; a hard decline (CVC failed) stays final. `SECOND_LOOK_ON_DECLINE=0` restores the old behaviour. |
+| G2 | Labels lived in an in-memory list and were lost on restart | **Done.** JSONL file, reloaded at startup, capped at 2000, tolerant of a missing or corrupt file |
+| G3 | Approve/decline only: no reason, no reviewer, nothing in the audit chain | **Done.** Closed reason vocabulary, reviewer id, leak-scanned note kept on the node, hash-chained audit of every opinion and expiry |
+| G4 | Retraining manual and per node; labels usable only by the 9-feature model | **Partly.** Labels carry a `decision_id` so they can be broadcast to specialists; the broadcast and automatic retraining are not built |
+| G5 | No visibility of human-versus-model disagreement | **Done.** `GET /review-stats`: agreement, overturn rate of soft declines, time to review, counts by reason |
+| G6 | `GET /reviews` needs no credential | **Unchanged.** It lists banded facts only; acting on a review still needs the reviewer token. Decide if that is intended. |
 
-**Planned changes (each with a test):**
-1. **A "fraud suspected" stage after classification.** Suspected = any soft decline, any `step_up`, or
-   `model_risk_band = high` together with at least one other signal. Soft declines go to a second-look queue: the
-   payment stays voided unless a human overturns it. A hard decline (CVC failed) stays final.
-2. **A structured human opinion.** `not_fraud` / `confirm_fraud` / `unsure`, plus a reason from a closed vocabulary
-   (for example `card_testing`, `ring_pattern`, `known_customer`, `customer_verified`, `other`). A free-text note is
-   leak-scanned and kept on the node. Each opinion is appended to the hash-chained audit with a reviewer id.
-3. **Persist labels** to a local file so they survive restarts.
-4. **Label propagation by `decision_id`** (needed once specialists exist): every specialist stores its own features
-   with the label, and the stacker stores the bands with it.
-5. **Retrain trigger and metrics.** Retrain after N new labels; show model-versus-human agreement, overturn rate and
-   time to review on the page.
-6. **Guardrails.** No human action can override a hard decline. Optionally require two reviewers above an amount.
+Two guardrails were added: no action can override a hard decline, and an optional two-reviewer rule
+(`TWO_REVIEWER_ABOVE_CENTS`) where an approval above the amount needs a second, different reviewer while a decline
+needs one. **Behaviour change to know about:** with the default on, a very risky purchase (score of 8 or more) now
+waits in the review queue instead of being refused on the spot. It is still not charged, and it is voided after an
+hour if nobody looks. The checkout-page changes were not opened in a browser, so give that page a look before the demo.
 
-### Real-time integration plan
+### Integration status and what is left
 
-Every phase leaves the demo path working. Time estimates are rough guesses.
-
-| Phase | What | Files | Gate to continue | Est. |
-|---|---|---|---|---|
-| 0 | Experiment, full and checkout-only results, this plan | `cardguard/specialists/`, README | done | done |
-| 1 | **Decide.** Read the two result tables above and pick a path. | none | team agrees | 10 min |
-| 2 | **Human in the loop after classification** (changes 1-3 above, then 5) | `merchant.py`, `coordinator.py` (stage flag only), tests | all old tests still pass; new tests for queue, closed reasons, audit entry, persistence | 1.5-2 h |
-| 3A | **Replay demo of the specialists.** Export trained specialists (logistic) to JSON; a replay endpoint scores a chosen IEEE-CIS test transaction and shows each specialist's band and the stack. Labelled "replay of real data", not live. | new `specialists/export.py`, replay route, page panel | export reproduces the experiment's AUC | 2-3 h |
-| 3B | **Specialist bands as extra facts from the same node.** Add up to three `*_risk_band` keys to `WIRE_SCHEMA`, `WEIGHTS` and `FACT_MEANINGS` (checkout-computable features only). Invariant 1a stays intact. | `guard.py`, `coordinator.py`, `merchant.py`, tests | only if the deployable stack beats the current model on the same holdout | 2 h |
-| 4 | **True specialist nodes.** One SuperNode per specialist, one band each. Needs invariant 1a reworked: accept one reply per `(decision_id, node_id)` with a quorum and abstain states, and treat the same node answering twice as the conflict. Label propagation (change 4), stacker retraining, per-specialist band cuts. | `agent_app.py`, `Verifier`, `merchant.py`, `retrain.py` | after the hackathon | days |
-| 5 | **Production.** Collect the richer signals for real (device intelligence, identity, geo), monitor drift, re-derive band cuts on a schedule, DP on the stacker. | | | |
+| Phase | What | Status |
+|---|---|---|
+| 0 | Experiment, full and live-computable results, federated measurement | done |
+| 1 | Decide the path | done: wire the live-computable specialists (FedAvg + fine-tune) and the human-in-the-loop work |
+| 2 | Human in the loop after classification (queue, structured audited opinion, persisted labels, stats, guardrails) | **done** |
+| 3B | Specialist band as an extra fact from the same node | **done** (one fact, `specialist_stack_band`) |
+| 3A | Replay demo of the full-feature specialists on real transactions, labelled as a replay | not built |
+| 4a | Broadcast a human label to the specialists and retrain the stack (label already carries `decision_id`) | not built |
+| 4b | True specialist nodes on the Grid: one band per node, invariant 1a reworked to accept one reply per `(decision_id, node_id)` with a quorum and abstain states | not built; larger change |
+| 5 | Production: collect richer signals for real (device intelligence, identity, geo), drift monitoring, scheduled band-cutoff refresh, DP on the stacker | future |
 
 Rules that carry through every phase: each new band is a closed vocabulary with a test (invariant 2); models only
 ever see banded facts; the verdict stays computed in code; no card data anywhere near a specialist.
 
 ### Recommendation and decision for the team
 
-1. **Present the specialist result honestly:** 0.866 against 0.773 on all columns, and about 0.787 against 0.773 on
-   checkout-computable columns. The story is that signal richness drives accuracy, and that vertical federation
-   lets parties who cannot pool their signal families still combine them.
-2. **Spend the build time on phase 2** (human in the loop after classification). It is safe, it is a visible demo
-   moment, it uses only existing pieces, and it answers the safety and oversight criterion directly.
-3. **Do not claim that merchant-level federation beats a merchant training alone.** The measurement above shows it matches the pooled stack (0.840 against 0.846) but merchants alone reach 0.852; it helps the smallest merchant.
-4. **Add phase 3A only if time allows.** Skip 3B unless the deployable gain looks better on a re-check, and leave
-   phase 4 for after the hackathon.
+1. **Present the specialist result honestly.** All dataset columns: stack 0.866 against 0.773. Live-computable
+   features: level with the current model (about 0.77). The message is that signal richness drives accuracy, and
+   that vertical federation lets parties who cannot pool their signal families still combine them.
+2. **Do not claim that merchant-level federation beats a merchant training alone.** Measured: the federated stack
+   matches the pooled one (0.840 against 0.846) but merchants alone reach 0.852. It helps the smallest merchants,
+   and breaks features whose meaning differs by merchant.
+3. **The demo moment is the human in the loop**, not the accuracy: a flagged payment waits, a reviewer gives a
+   reason, it lands in the audit chain and becomes a label. Show `/review-stats` and the per-family bands in the ledger.
+4. **Next, if time allows:** broadcast labels to the specialists (4a), or a replay of the full-feature specialists (3A).
+   Leave true specialist nodes (4b) for after the hackathon.
 
 ## Layout
 
