@@ -44,7 +44,7 @@ off-vocabulary values are blocked, altered bands are an integrity failure, and c
 model request. Without a model endpoint the run stops at "no model endpoint" and the payment is voided; say that plainly.
 
 ## 6. Card-testing ring (45 s)  -> the network sees what no store can
-Click "Card-testing ring" (the model learns from the review in section 7, so keep that store held): the same card buys $24 at store-a, store-b, store-c within a minute. Each store alone sees one
+Click "Card-testing ring": the same card buys $24 at store-a, store-b, store-c within a minute. Each store alone sees one
 ordinary purchase. The coordinator's network memory, persisted in the Flower run series, sees the same letters-only card
 reference at one, two, then three merchants: low, medium, high. The third checkout is held for a person and the alert names
 every store that saw the card. If a middle store is held early, that is the live Jev vote below the 80% confidence gate.
