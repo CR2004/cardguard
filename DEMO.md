@@ -49,7 +49,7 @@ ordinary purchase. The coordinator's network memory, persisted in the Flower run
 reference at one, two, then three merchants: low, medium, high. The third checkout is held for a person and the alert names
 every store that saw the card. If a middle store is held early, that is the live Jev vote below the 80% confidence gate.
 Say: "Stores share a pseudonym and a band, nothing else. Each store here is one merchant identity on this node; in production
-each is its own SuperNode, and that mode is in the repo."
+each would be its own SuperNode."
 
 ## 7. The human, and the model learning at once (30 s)
 On the held ring payment: enter the reviewer credential once (this browser remembers it), then decline. The reply shows the payment's model band

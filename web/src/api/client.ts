@@ -44,11 +44,10 @@ const asReviewer = () => ({ Authorization: `Bearer ${reviewerToken()}` });
 
 export const api = {
   config: () => get<Config>('/config'),
-  // `base` targets another merchant node of the demo network (one SuperNode per store); '' is this node.
-  checkout: (body: CheckoutRequest, base = '') => post<CheckoutResult>(`${base}/checkout`, body),
-  trace: (id: string, after: number, base = '') => get<TracePage>(`${base}/trace/${id}?after=${after}`),
-  review: (id: string, action: 'approve' | 'decline', base = '') =>
-    post<CheckoutResult>(`${base}/reviews/${id}/${action}`, {}, asReviewer()),
+  checkout: (body: CheckoutRequest) => post<CheckoutResult>('/checkout', body),
+  trace: (id: string, after: number) => get<TracePage>(`/trace/${id}?after=${after}`),
+  review: (id: string, action: 'approve' | 'decline') =>
+    post<CheckoutResult>(`/reviews/${id}/${action}`, {}, asReviewer()),
   ledger: () => get<LedgerPage>('/ledger'),
   payments: () => get<PaymentRow[]>('/payments'),
   alerts: () => get<{ alerts: AlertRow[] }>('/alerts'),

@@ -21,12 +21,11 @@ interface State {
   error: string | null;
   ciphertext: string | null;
   runs: number;
-  base: string; // the merchant node this run is on ('' = this page's node)
 }
 
 type Action =
   | { type: 'tokenizing' }
-  | { type: 'start'; traceId: string; ciphertext: string; base: string }
+  | { type: 'start'; traceId: string; ciphertext: string }
   | { type: 'page'; events: TraceEvent[]; done: boolean; rawCardShared?: number }
   | { type: 'advance' }
   | { type: 'skip' }
@@ -36,7 +35,7 @@ type Action =
 
 const initial: State = {
   status: 'idle', traceId: null, events: [], applied: 0, serverDone: false, rawCardShared: null,
-  result: null, error: null, ciphertext: null, runs: 0, base: '',
+  result: null, error: null, ciphertext: null, runs: 0,
 };
 
 function reducer(s: State, a: Action): State {
@@ -44,7 +43,7 @@ function reducer(s: State, a: Action): State {
     case 'tokenizing':
       return { ...initial, status: 'tokenizing', runs: s.runs };
     case 'start':
-      return { ...initial, status: 'running', traceId: a.traceId, ciphertext: a.ciphertext, runs: s.runs + 1, base: a.base };
+      return { ...initial, status: 'running', traceId: a.traceId, ciphertext: a.ciphertext, runs: s.runs + 1 };
     case 'page': {
       const known = new Set(s.events.map((e) => e.seq));
       const fresh = a.events.filter((e) => !known.has(e.seq));
@@ -86,10 +85,9 @@ export function useInvestigation(config: Config | null) {
     if (!state.traceId || finished) return;
     let cancelled = false;
     const id = state.traceId;
-    const base = state.base;
     const tick = async () => {
       try {
-        const page = await api.trace(id, lastSeq.current, base);
+        const page = await api.trace(id, lastSeq.current);
         if (cancelled) return;
         const newest = page.events.at(-1);
         if (newest) lastSeq.current = newest.seq;
@@ -104,7 +102,7 @@ export function useInvestigation(config: Config | null) {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [state.traceId, state.base, finished, awaitingHuman]);
+  }, [state.traceId, finished, awaitingHuman]);
 
   // The player: apply the next real event after the previous one has had time to be seen.
   useEffect(() => {
@@ -129,7 +127,7 @@ export function useInvestigation(config: Config | null) {
   // the latest gate: after a Flower fallback the store node's own gate supersedes the unbound one
   const gateKey = [...state.events.slice(0, state.applied)].reverse().find((e) => e.kind === 'gate.decision')?.seq ?? -1;
 
-  const run = useCallback(async (input: RunInput, getCiphertext: () => Promise<string>, base = ''): Promise<CheckoutResult | null> => {
+  const run = useCallback(async (input: RunInput, getCiphertext: () => Promise<string>): Promise<CheckoutResult | null> => {
     dispatch({ type: 'tokenizing' });
     let blob: string;
     try {
@@ -140,9 +138,9 @@ export function useInvestigation(config: Config | null) {
     }
     const traceId = newTraceId();
     lastSeq.current = -1;
-    dispatch({ type: 'start', traceId, ciphertext: blob, base });
+    dispatch({ type: 'start', traceId, ciphertext: blob });
     try {
-      const result = await api.checkout({ ...input, blob, trace_id: traceId }, base);
+      const result = await api.checkout({ ...input, blob, trace_id: traceId });
       dispatch({ type: 'result', result, traceId });
       if (result.error) dispatch({ type: 'error', error: result.error });
       return result;
@@ -153,11 +151,11 @@ export function useInvestigation(config: Config | null) {
   }, []);
 
   const decide = useCallback(async (reviewId: string, action: 'approve' | 'decline') => {
-    const result = await api.review(reviewId, action, state.base);
+    const result = await api.review(reviewId, action);
     if (result.error) throw new Error(result.error);
     dispatch({ type: 'result', result });
     return result;
-  }, [state.base]);
+  }, []);
 
   return {
     state,
