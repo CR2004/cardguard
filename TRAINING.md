@@ -24,19 +24,27 @@ averaged. That is federated learning. No transaction row ever leaves a merchant.
 
 ## What is trained
 
-| | Original model | Specialist models (new) |
-|---|---|---|
-| What | one logistic regression | four small logistic regressions + one that combines them |
-| Sees | 9 checkout features | 16 features in 4 families: transaction, identity, geo, behavior |
-| Sends to the coordinator | one band, `model_risk_band` | one band, `specialist_stack_band` |
-| Saved as | `fl_weights.json` (10 numbers) | `specialist_weights.json` (about 6 KB) |
-| Trained by | `python -m cardguard.training.flower_app` | `python -m cardguard.specialists.export` |
-| Training run | a Flower app (ServerApp + ClientApp), one simulated SuperNode per merchant | our own Python code running the same averaging steps, not yet inside a Flower app |
+Two models are trained and used together at every checkout.
+
+**Federated fraud model** (sends `model_risk_band`)
+- **What:** one logistic regression.
+- **Sees:** 9 checkout features: amount high or low for this merchant, country mismatch, credit card, purchases in
+  the last 24 hours, first time this merchant sees the card, night hour, card age, days since the previous purchase.
+- **Saved as:** `fl_weights.json` (10 numbers).
+- **Trained by:** `python -m cardguard.training.flower_app`, a Flower app (ServerApp + ClientApp) with one simulated
+  SuperNode per merchant.
+
+**Specialist models** (send `specialist_stack_band`)
+- **What:** four small logistic regressions, one per signal family, plus one that combines their bands.
+- **Sees:** 16 features in four families: transaction, identity, geo, behavior.
+- **Saved as:** `specialist_weights.json` (about 6 KB).
+- **Trained by:** `python -m cardguard.specialists.export`, our own Python code running the same averaging steps
+  (not yet inside a Flower app).
 
 Logistic regression is just `score = bias + weight1 x feature1 + ...`, squashed into a 0-to-1 fraud probability. A
 model that is only a list of numbers can be averaged, and its files are tiny.
 
-## Training the original model
+## Training the federated fraud model
 
 ```
 each merchant: train 5 epochs on its own rows, starting from the current global weights
@@ -95,8 +103,8 @@ counting as much as 50 ordinary rows, and then a short fine-tune on that merchan
 - Merchants training **alone** score lower overall than the federated setup (0.744 vs 0.774 for the specialists),
   notably at the largest merchant.
 - Plain averaging alone can hurt a merchant, which is what the fine-tune step fixes; the specialists' fine-tuned
-  version helps the small merchants most (merchant S: 0.525 against 0.381 for the original model).
-- Overall, the specialists are level with the original model (0.774 against 0.768). Details are in the README.
+  version helps the small merchants most (merchant S: 0.525 against 0.381 for the federated fraud model).
+- Overall, the specialists are level with the federated fraud model (0.774 against 0.768). Details are in the README.
 
 ## Where the Flower agent comes in
 
@@ -118,7 +126,7 @@ be run on the machine that built the specialists because `flwr` was not installe
 by the in-process tests, and by reading the code they take the same route. Please run it once with `flwr`.)
 
 **2. Training the models.**
-- **Original model:** a real Flower ServerApp and ClientApp, run locally with one simulated SuperNode per merchant.
+- **Federated fraud model:** a real Flower ServerApp and ClientApp, run locally with one simulated SuperNode per merchant.
 - **Specialists:** trained by our own Python code that performs the same FedAvg steps over the five merchant slices,
   one process, one machine. The maths is the same, but it is not yet inside a Flower app. Moving it there is a
   moderate change: the per-merchant training step stays as it is, and the fine-tune becomes a second, client-side
@@ -128,7 +136,7 @@ by the in-process tests, and by reading the code they take the same route. Pleas
 
 | What | Where |
 |---|---|
-| Original model: Flower training | `cardguard/training/flower_app.py`, `fl.py` |
+| Federated fraud model: Flower training | `cardguard/training/flower_app.py`, `fl.py` |
 | Human-label retraining | `cardguard/training/retrain.py` |
 | Specialists: training and export | `cardguard/specialists/export.py`, `federated.py`, `features.py` |
 | Specialists: live scoring at checkout | `cardguard/specialists/live.py` |
