@@ -5,7 +5,7 @@ Built for the Flower Collaborative Agent Hackathon (Stanford, Sep 29 2026).
 Merchants cannot fight fraud together because the one thing they would have to share is the card.
 CardGuard is a decision layer between "card entered" and "money moves": the card goes from Stripe
 Elements to Stripe and nobody else ever sees it; the merchant reduces the payment to eight banded
-facts; agents on different Flower nodes decide together on those facts; a human approves anything
+facts (nine when the specialist model file is present); agents on different Flower nodes decide together on those facts; a human approves anything
 risky; every disclosure is logged; and a fraud model is trained across merchants with Flower so only
 weights ever leave a node. Stripe moves the money. We decide whether it should.
 
@@ -20,19 +20,33 @@ fetched the facts; fraud-ring detection across stores with memory across Flower 
 with a reviewer credential; chargebacks and reviews that retrain the network (federated round +
 local fine-tune); join-the-network command; differential privacy with a reported budget; dispute
 evidence agent; live prompt-injection demo contained by the guard; real-data training on IEEE-CIS;
-119 offline tests; two code reviews (dead code, security) applied.
+148 offline tests (137 pass in a plain environment; 4 tests and 2 test files need `flwr`); two code reviews (dead code, security) applied.
 
-**Left, in order:** commit and push; Stripe test keys and the Flower model key in `.env`;
+**Left, in order:** review and merge the `specialists-experiment` pull request (checklist below); Stripe test keys and the Flower model key in `.env`;
 `flwr login supergrid` and the SuperGrid run (needs a SuperNode we control); personalisation at
-merchant startup; UI polish; Flower Hub publish; backup video; pitch.
+merchant startup; UI polish (the new review panel has not been opened in a browser); Flower Hub publish; backup video; pitch.
 
-**Experiment, now wired in: fraud specialists.** Four small models, each seeing one signal family (transaction,
-identity, geography, behavior), are trained with FedAvg across the five merchants, fine-tuned locally, and stacked
-into one new fact, `specialist_stack_band`, that the merchant node adds when `specialist_weights.json` exists.
-Honest result: with only the features a checkout can compute, the stack is on par with the current model
-(AUC about 0.77); the large gain (0.866) needs columns the dataset's processor engineered. The human-in-the-loop upgrades are merged too (soft declines get a second look; structured, audited human
-opinions; persisted labels). Details, the live wiring and the plan: [Fraud specialists](#fraud-specialists-experiment-branch-specialists-experiment).
-A plain-words before-and-after guide for the team: [OLD_VS_NEW.md](OLD_VS_NEW.md).
+**On branch `specialists-experiment` (pushed, not yet merged): fraud specialists and human-in-the-loop upgrades.**
+- *Specialists.* Four small models, each seeing one signal family (transaction, identity, geography, behavior), are
+  trained with FedAvg across the five merchants, fine-tuned locally, and stacked into one new banded fact,
+  `specialist_stack_band`, which the merchant node adds when `specialist_weights.json` exists. Honest result: with
+  only the features a checkout can compute the stack is on par with the current model (AUC about 0.77); the large
+  gain (0.866) needs columns the dataset's processor engineered.
+- *Human in the loop.* Soft declines get a second look; a human's opinion has a reason from a fixed list, is
+  audited in a hash-chained log, and becomes a saved training label.
+- Details, the live wiring and the plan: [Fraud specialists](#fraud-specialists-experiment-branch-specialists-experiment).
+  A plain-words before-and-after guide for the team: [OLD_VS_NEW.md](OLD_VS_NEW.md).
+
+**Before merging that branch:**
+1. Run `python -m pytest -q` in the project `.venv` (with `flwr`). On the machine that built the branch `flwr`
+   was missing, so 4 tests and 2 test files could not run; everything else passes.
+2. Open the checkout page and try a queued review: the reason dropdown, note box and "Review stats" button were
+   written and tested through the API only.
+3. Decide `SECOND_LOOK_ON_DECLINE`. With the default (on), a very risky purchase waits for a human instead of
+   being refused on the spot; `SECOND_LOOK_ON_DECLINE=0` restores the old behaviour.
+4. `specialist_weights.json` is trained offline on the IEEE-CIS verticals and committed. Regenerate it with
+   `python -m cardguard.specialists.export` if the features change; delete it (or set `SPECIALIST_WEIGHTS=none`) to
+   switch the specialists off.
 
 ## Quick start
 
@@ -41,7 +55,7 @@ Python 3.11 or 3.12, [uv](https://docs.astral.sh/uv/).
     git clone https://github.com/CR2004/cardguard.git && cd cardguard
     uv venv --python 3.12 .venv && uv pip install --python .venv/bin/python -r requirements.txt
     source .venv/bin/activate
-    python -m pytest -q                              # 119 tests, offline, seconds
+    python -m pytest -q                              # 148 tests, offline, seconds
 
     cp .env.example .env                             # then fill in: STRIPE_SECRET_KEY, STRIPE_PUBLISHABLE_KEY (test keys,
                                                      # required), FLWR_MODEL_API_KEY (live explanations), TYPESAFE_API_KEY (Jev)
@@ -57,15 +71,19 @@ Python 3.11 or 3.12, [uv](https://docs.astral.sh/uv/).
 **Real data** (what the shipped model was trained on): put IEEE-CIS `train_transaction.csv` in
 `datasets/` (see datasets/README.md), then `python -m cardguard.data.ieee_cis` and
 `python -m cardguard.training.flower_app`. Without it, training and tests use synthetic data.
+For the specialist models also add `train_identity.csv`, then `python -m cardguard.specialists.export`
+(writes `specialist_weights.json`; the offline experiments need `pip install -r requirements-experiments.txt`).
 
 ## How a payment flows
 
 1. **Card entry.** Stripe Elements sends the number, expiry and CVC to Stripe. The store receives a
    payment-method token and posts only that.
 2. **Facts.** The merchant asks Stripe for the card's metadata and turns it, plus its own history,
-   into eight banded facts: amount relative to its own order sizes, country mismatch, funding, CVC
-   result, velocity, first sighting, and the federated model's risk band. The model scores nine raw
-   local features; only its band leaves the node.
+   into banded facts: amount relative to its own order sizes, country mismatch, funding, CVC
+   result, velocity, first sighting, and the federated model's risk band (the coordinator adds an eighth, the
+   network view). The model scores nine raw local features; only its band leaves the node. When
+   `specialist_weights.json` exists, four small one-signal-family models also score the checkout and their
+   stacked band, `specialist_stack_band`, joins the facts (their four individual bands stay in the local audit note).
 3. **Wire guard.** The facts pass through a ledger that allows one disclosure per decision, limits
    disclosures per card, and rejects unknown keys, off-vocabulary values, oversized strings and
    card-like digit runs. Everything is logged in a hash-chained ledger.
@@ -76,7 +94,9 @@ Python 3.11 or 3.12, [uv](https://docs.astral.sh/uv/).
    code, hard-declines a failed CVC, sends low-confidence approvals to a human, asks Endeavor for one
    sentence, and emits the verdict. The merchant accepts it only from its own node, for its own decision.
 5. **Outcome.** Approve confirms a Stripe test-mode PaymentIntent. Step-up waits for a credentialed
-   human. Decline voids. Human decisions and chargebacks become labels on the node; "Retrain" runs a
+   human, and so does a soft decline (a second look; a failed CVC stays a final decline). Decline voids. The
+   human gives a reason from a fixed list, which is written to a tamper-evident audit. Human decisions and
+   chargebacks become labels on the node, saved to disk; "Retrain" runs a
    federated round and a local fine-tune; a dispute agent drafts the chargeback response for a human.
 
 Code drives every Grid call. No model chooses a tool, sees a Grid payload, or decides alone.
@@ -84,9 +104,10 @@ Code drives every Grid call. No model chooses a tool, sees a Grid payload, or de
 ## The demo (about four minutes)
 
 1. **A real purchase.** $20 with 4242 4242 4242 4242: the store shows a pm_ token, the SuperLink log
-   shows the agents talking, the ledger shows eight words, the PaymentIntent lands in Stripe's dashboard.
-2. **Human in the loop.** $900 with 4000 0027 6000 3184 (German card): band high, human queue; decline
-   voids, approve charges.
+   shows the agents talking, the ledger shows eight words (nine with the specialist band), the PaymentIntent lands in Stripe's dashboard.
+2. **Human in the loop.** $900 with 4000 0027 6000 3184 (German card): band high, human queue; the reviewer
+   picks a reason, decline voids, approve charges. Show `/review-stats` and the audit entry; the four per-family
+   bands are in the ledger note.
 3. **Fraud ring.** The same card at store-a, store-b, store-c within minutes: two clean approvals, then
    the coordinator's network view turns the third red and alerts all three stores.
 4. **Break it.** 4000 0000 0000 0101: CVC fails, hard decline, Jev never asked. 4000 0000 0000 0002:
@@ -102,7 +123,7 @@ Code drives every Grid call. No model chooses a tool, sees a Grid payload, or de
 |---|---|---|
 | Put the card on the wire (compromised merchant) | Wire guard: closed vocabulary, Luhn scan, length cap | 3 BLOCKED ledger entries, counter stays 0 |
 | Prompt injection through customer text (buyer) | The vulnerable agent's draft is guarded, then integrity-checked against code-computed facts | Draft BLOCKED, or "altered X: ignored" |
-| Injection into the decision models (anyone) | Structural: Jev and Endeavor receive only vocabulary words; tests enumerate all 1,296 fact combinations | No path exists |
+| Injection into the decision models (anyone) | Structural: Jev and Endeavor receive only vocabulary words; tests enumerate all 11,664 fact combinations | No path exists |
 | Slow leak through allowed values (compromised merchant) | One disclosure per decision, three attempts, ten per card per hour, receiving-side Verifier | Rate-limit BLOCKED entries |
 | Forge a verdict for another merchant (hostile SuperNode) | Verdict accepted only from the node that fetched the facts; two replies for one decision go to a human | Verdict rejected |
 | Poison the network view (hostile SuperNode) | Sightings keyed by Flower's authenticated node id | Alerts name the node |
@@ -134,6 +155,10 @@ columns a merchant does not have at checkout. More accuracy comes from richer no
 (0.78 to 0.85 measured), never from more bits on the wire. The ring detection is real code but this
 dataset cannot validate it: 69 cross-vertical sightings in 590k rows. Differential privacy is
 available (`FL_DP_NOISE=1.0`): epsilon about 40 at delta 1e-5 over 30 rounds, costing 0.015 AUC.
+
+Specialist models (four signal families, stacked): AUC 0.866 with every dataset column against 0.773 for the model
+above, but only about 0.77 with the features a checkout can compute. Measurements, the merchant-level federation
+results and the caveats are in [Fraud specialists](#fraud-specialists-experiment-branch-specialists-experiment).
 
 ## Fraud specialists experiment (branch `specialists-experiment`)
 
@@ -529,7 +554,7 @@ ever see banded facts; the verdict stays computed in code; no card data anywhere
 |---|---|
 | cardguard/decision/ | guard (schema, leak scanner, ledger), coordinator (rules, Jev, Verifier), explain (Endeavor), network (ring fact), audit (hash chain), llm (one model client) |
 | cardguard/agentapp/ | agent_app (coordinator and merchant roles over Grid), launch (start a run via the SuperLink Control API), dispute_agent |
-| cardguard/payment_processing/ | merchant (Flask node), stripe_processor, processor_base, agent_llm (the vulnerable demo agent), checkout.html |
+| cardguard/payment_processing/ | merchant (Flask node), review_store (human opinions, audit, saved labels), stripe_processor, processor_base, agent_llm (the vulnerable demo agent), checkout.html |
 | cardguard/training/ | fl (numpy logistic regression + FedAvg), flower_app (Flower ServerApp/ClientApp), retrain, join, privacy |
 | cardguard/data/ieee_cis.py | real data: five verticals, features relative to each, time holdout |
 | cardguard/specialists/ | four signal-family models scored live (`live.py`), trained and exported (`export.py`), plus the offline experiment (`experiment.py`, `federated.py`) |
@@ -573,14 +598,19 @@ persisted and fed back as a training label. Card data never appears in any of it
 explanations through Flower; model `Flwrlabs/endeavor-v1.0`) · `TYPESAFE_API_KEY` (Jev) ·
 `LLM_BASE_URL/LLM_API_KEY/LLM_MODEL` (direct calls for the injection demo and dispute drafts) ·
 `MERCHANT_VERTICAL` · `STORES` · `FL_DP_NOISE`, `FL_DP_CLIP`, `FL_ROBUST` · `DEMO_CONTROLS` (set by
-run_demo: page may choose country, hour, attack, agent mode; unset = production behaviour).
+run_demo: page may choose country, hour, attack, agent mode; unset = production behaviour) ·
+`SPECIALIST_WEIGHTS` (path, or `none` to switch the specialist models off) · `SECOND_LOOK_ON_DECLINE` (default 1) ·
+`TWO_REVIEWER_ABOVE_CENTS` (default 0 = off) · `LABELS_FILE`, `REVIEW_AUDIT_FILE` (default under `.demo/`).
 
 ## Assumptions, stated plainly
 
 Stripe test mode is real Stripe with no real money. Synthetic data is used only by offline tests.
 Fallbacks announce themselves: `decided_by: rules` without Jev, `by: template` without a model
 endpoint. The buyer's country is a demo control; production plugs IP geolocation into `geolocate()`.
-Rules weights, band cut-offs, velocity cuts, the human-label weight and the ring window are hand-set.
+Rules weights (including the one for `specialist_stack_band`), band cut-offs, velocity cuts, the human-label weight
+and the ring window are hand-set. The specialists' FedAvg is plain numpy simulating the five merchants in one process
+for training (`cardguard/specialists/export.py`), not yet run on Flower SuperNodes; the original model's training is
+the real Flower app. Live, one node loads its own vertical's weights.
 Several stores on one node is a demo convenience; in production one node is one merchant.
 
 Traps: port 8000 may be taken (the SuperLink uses 8010); `flwr run` refuses AgentApps without a
