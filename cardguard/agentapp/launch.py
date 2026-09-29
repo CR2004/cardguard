@@ -19,7 +19,7 @@ from cardguard import ROOT
 log = logging.getLogger(__name__)
 VERDICT_EVENT = "cardguard.verdict"
 DEFAULT_PROMPT = "Decide the pending card payment with the merchant node."
-FINISH_GRACE = 10.0  # seconds to let a run finish after its verdict: its context.state (the network
+FINISH_POLL = 0.2  # seconds between run-status polls once the verdict is in: its context.state (the network
                      # table) is saved when the run ends, and the next decision must see it
 
 
@@ -112,7 +112,7 @@ def _wait_for_completed_run(stub, run_id: int, deadline: float) -> bool:
         run = stub.ListRuns(ListRunsRequest(run_id=run_id)).run_dict.get(run_id)
         if run is not None and run.finished_at:
             return run.status.status == "finished" and run.status.sub_status == "completed"
-        time.sleep(0.2)
+        time.sleep(FINISH_POLL)
     return False
 
 
@@ -123,7 +123,8 @@ def decide_over_flower(superlink: str, decision_id: str, timeout: float = 240.0,
     """Run the coordinator AgentApp for one decision; return its verdict, or None on any failure.
     Never raises: the merchant node falls back to deciding in-process and records that it did.
     on_event sees every run event as it streams (plus "run.started" / "run.finished"): display only.
-    After the verdict, waits up to FINISH_GRACE for the run to finish so its state is saved."""
+    An emitted verdict is released only once the run reports finished/completed: its context.state
+    (the network memory) is committed at teardown, and a back-to-back decision must start from it."""
     result: dict = {}
     settled = threading.Event()  # a verdict, an error, or the end of the stream
 
@@ -135,7 +136,7 @@ def decide_over_flower(superlink: str, decision_id: str, timeout: float = 240.0,
                 pass
 
     def worker() -> None:
-        stub = None
+        stub, verdict = None, None  # the emitted verdict stays local until the run has completed
         try:
             deadline = time.monotonic() + timeout
             stub = client(superlink)
@@ -146,15 +147,20 @@ def decide_over_flower(superlink: str, decision_id: str, timeout: float = 240.0,
             for event_type, payload in events(stub, run_id):
                 result["last_event"] = event_type
                 notify(event_type, payload)
-                if "verdict" in result:
+                if verdict is not None:
                     continue  # draining until the run finishes
                 if event_type == VERDICT_EVENT and isinstance(payload.get("verdict"), dict):
-                    result["verdict"] = payload["verdict"]
-                    settled.set()
+                    verdict = payload["verdict"]
                 elif event_type in {"error", "response.failed"}:
                     result["error"] = payload
                     return
             notify("run.finished", {"run_id": run_id})  # the stream ends when the run has finished
+            if verdict is None:
+                return
+            if _wait_for_completed_run(stub, run_id, deadline):
+                result["verdict"] = verdict  # released only now: the next decision reads this run's state
+            else:
+                result["error"] = "run did not complete before timeout"
         except Exception as e:  # noqa: BLE001 - any failure means "no verdict from the federation"
             result["error"] = f"{type(e).__name__}: {e}"
         finally:
@@ -169,8 +175,6 @@ def decide_over_flower(superlink: str, decision_id: str, timeout: float = 240.0,
     t.start()
     if not settled.wait(timeout):
         result["error"] = "timed out waiting for the federation"
-    elif "verdict" in result:
-        t.join(FINISH_GRACE)  # back-to-back decisions: the next run must start from this run's saved state
     if "verdict" not in result:
         log.warning("no verdict from %s for decision %s: %s (last event: %s); check the SuperLink log",
                     superlink, decision_id, result.get("error"), result.get("last_event"))
