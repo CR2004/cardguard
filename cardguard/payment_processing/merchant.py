@@ -58,7 +58,27 @@ SECOND_LOOK_ON_DECLINE = os.environ.get("SECOND_LOOK_ON_DECLINE", "1") != "0"
 TWO_REVIEWER_ABOVE_CENTS = int(os.environ.get("TWO_REVIEWER_ABOVE_CENTS", "0"))  # 0 = off; above it an approval needs two reviewers
 LABELS_FILE = os.environ.get("LABELS_FILE", str(ROOT / ".demo" / "labels.jsonl"))
 REVIEW_AUDIT_FILE = os.environ.get("REVIEW_AUDIT_FILE", str(ROOT / ".demo" / "review_audit.jsonl"))
-ALLOWED_HOSTS = {h.strip() for h in os.environ.get("MERCHANT_HOSTS", "127.0.0.1:4242,localhost:4242,127.0.0.1,localhost").split(",")}
+MERCHANT_PORT = int(os.environ.get("MERCHANT_PORT", "4242"))
+ALLOWED_HOSTS = {h.strip() for h in os.environ.get(
+    "MERCHANT_HOSTS", f"127.0.0.1:{MERCHANT_PORT},localhost:{MERCHANT_PORT},127.0.0.1,localhost").split(",")}
+
+
+def parse_peers(spec: str) -> list[dict]:
+    """MERCHANT_PEERS="store-a=http://127.0.0.1:4242,store-b=http://127.0.0.1:4252": the other merchant nodes of
+    this demo network, one SuperNode each. The page uses the list to run the ring across nodes; their origins
+    are the only ones this node answers cross-origin."""
+    out = []
+    for part in filter(None, (p.strip() for p in spec.split(","))):
+        store, _, url = part.partition("=")
+        if store and url.startswith("http") and net.MERCHANT_ID_RE.match(store):
+            out.append({"store": store, "url": url.rstrip("/")})
+    return out
+
+
+PEERS = parse_peers(os.environ.get("MERCHANT_PEERS", ""))
+PEER_ORIGINS = {p["url"] for p in PEERS} | {p["url"].replace("127.0.0.1", "localhost") for p in PEERS}
+CORS_HEADERS = {"Access-Control-Allow-Headers": "Content-Type, Authorization, X-Reviewer-Id",
+                "Access-Control-Allow-Methods": "GET, POST, OPTIONS", "Access-Control-Max-Age": "600"}
 MAX_AMOUNT_CENTS = 10_000_000                             # $100,000: anything above is not a checkout
 CHECKOUT_RATE_PER_MINUTE = int(os.environ.get("CHECKOUT_RATE_PER_MINUTE", "30"))  # per client address
 
@@ -188,6 +208,10 @@ def _cross_site_guards():
     preflight we never answer), and only the hosts this node is known as (no DNS rebinding)."""
     if request.host not in ALLOWED_HOSTS:
         return jsonify({"error": "unknown host"}), 421
+    if request.method == "OPTIONS":  # a preflight is answered only for a configured peer node's page
+        if request.headers.get("Origin") in PEER_ORIGINS:
+            return "", 204, {"Access-Control-Allow-Origin": request.headers["Origin"], "Vary": "Origin", **CORS_HEADERS}
+        return jsonify({"error": "no cross-origin access"}), 403
     if request.method == "POST" and request.content_length and not request.is_json:
         return jsonify({"error": "application/json required"}), 415
     return None
@@ -197,6 +221,10 @@ def _cross_site_guards():
 def _page_headers(resp):
     resp.headers["Content-Security-Policy"] = "frame-ancestors 'none'"  # the merchant page is never framed
     resp.headers["X-Content-Type-Options"] = "nosniff"
+    origin = request.headers.get("Origin")
+    if origin and origin in PEER_ORIGINS:  # the ring demo: a peer node's page checks out here directly
+        resp.headers["Access-Control-Allow-Origin"] = origin
+        resp.headers["Vary"] = "Origin"
     return resp
 
 
@@ -472,6 +500,7 @@ def config():
     (p10, p50, p90), basis = baseline.cuts()
     return jsonify({"merchant_id": MERCHANT_ID, "vertical": VERTICAL,
                     "federation": FEDERATION or None, "stores": STORES, "bank_attestation": bank is not None,
+                    "port": MERCHANT_PORT, "peers": PEERS,  # other merchant nodes of this demo network (one SuperNode each)
                     "publishable_key": processor.publishable_key, "demo_controls": DEMO_CONTROLS,
                     "wire_vocabulary": {k: sorted(v) for k, v in WIRE_SCHEMA.items() if v},  # the closed vocabulary
                     "amount_cuts": {"medium_from": p50, "high_from": p90, "basis": basis}})
@@ -936,5 +965,5 @@ if INSTANT_LEARNING and labels:  # a restart keeps what the reviewers taught: th
 
 
 if __name__ == "__main__":
-    print("Merchant node on http://127.0.0.1:4242  (Stripe TEST mode; this node never sees card data)")
-    app.run(port=4242)
+    print(f"Merchant node {MERCHANT_ID} on http://127.0.0.1:{MERCHANT_PORT}  (Stripe TEST mode; this node never sees card data)")
+    app.run(port=MERCHANT_PORT)

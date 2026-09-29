@@ -65,26 +65,36 @@ export function App() {
     }, getPaymentMethod);
   }
 
-  // The ring: the same card (Stripe tokenizes it afresh each time) at every store of this node, one real
-  // checkout after another, the way a card-testing ring keeps going. A held checkout stays in the review
-  // queue and the ring moves on; a decline or a block ends it. Earlier checkouts are shown at a glance;
-  // the last one plays in full.
+  // Where the ring checks out. With one merchant node per store (run_demo --node-per-store) each checkout
+  // goes to that store's own node, its own SuperNode answering the coordinator; this page's node is ''.
+  // Otherwise one node fronts several stores and the store name rides along.
+  const ringTargets = useMemo(() => {
+    if (!config) return [];
+    if (config.peers && config.peers.length >= 3) {
+      return config.peers.map((p) => ({ store: p.store, base: p.store === config.merchant_id ? '' : p.url, storeField: undefined }));
+    }
+    return config.stores.map((s) => ({ store: s, base: '', storeField: s as string | undefined }));
+  }, [config]);
+
+  // The ring: the same card (Stripe tokenizes it afresh each time) at every store, one real checkout after
+  // another, the way a card-testing ring keeps going. A held checkout stays in that node's review queue
+  // and the ring moves on; a decline or a block ends it. Earlier checkouts are shown at a glance; the last
+  // one plays in full.
   async function startRing(next: Inputs) {
     if (!config) return;
     setNotice(null);
     const steps: RingStep[] = [];
     setRing(steps);
-    const stores = config.stores;
-    for (const [i, store] of stores.entries()) {
+    for (const [i, target] of ringTargets.entries()) {
       const result = await inv.run({
-        amount_cents: next.amountCents, buyer_country: next.buyerCountry, store,
+        amount_cents: next.amountCents, buyer_country: next.buyerCountry, store: target.storeField,
         attack: null, model_agent: false, gift_message: '',
-      }, getPaymentMethod);
+      }, getPaymentMethod, target.base);
       const outcome = result?.outcome ?? 'error';
-      steps.push({ store, outcome, band: result?.verdict?.network?.band ?? null });
+      steps.push({ store: target.store, outcome, band: result?.verdict?.network?.band ?? null });
       const stop = !result || !(outcome === 'approved' || outcome === 'needs_review');
-      if (stop || i === stores.length - 1) {
-        for (const rest of stores.slice(i + 1)) steps.push({ store: rest, outcome: 'not_reached', band: null });
+      if (stop || i === ringTargets.length - 1) {
+        for (const rest of ringTargets.slice(i + 1)) steps.push({ store: rest.store, outcome: 'not_reached', band: null });
         setRing([...steps]);
         return;
       }
@@ -98,8 +108,8 @@ export function App() {
       modelAgent: s.modelAgent, gift: s.gift || inputs.gift };
     setScenario(s.id);
     setInputs(next);
-    if (s.ring && config && config.stores.length < 3) {
-      setNotice('This scenario needs three stores on the node: start it with python run_demo.py --stores store-a,store-b,store-c.');
+    if (s.ring && ringTargets.length < 3) {
+      setNotice('This scenario needs three stores: start with python run_demo.py --stores store-a,store-b,store-c (add --node-per-store for one SuperNode per store).');
       return;
     }
     // The card is typed into Stripe's own field; once it is complete a scenario runs in one click.
@@ -153,6 +163,7 @@ export function App() {
           received={state.ciphertext}
           error={state.error ?? notice}
           ring={ring}
+          ringStores={ringTargets.map((t) => t.store)}
           stripeCard={stripeCard}
         />
         <section className="band" aria-label="Investigation steps">

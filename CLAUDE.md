@@ -100,6 +100,12 @@ server on this laptop, so the SuperLink Runtime API runs on 8010:
     python scripts/run_superlink.py              # = flower-superlink --insecure --host 127.0.0.1 --port 8010 (venv on PATH!)
     python scripts/run_supernode.py              # = flower-supernode --insecure --superlink 127.0.0.1:9092 ...
     python run_demo.py --federation local-agent  # checkout -> launch.decide_over_flower -> AgentApp run
+    python run_demo.py --federation local-agent --stores store-a,store-b,store-c --node-per-store
+                                                 # one merchant process per store (:4242/:4252/:4262) and one SuperNode each:
+                                                 # python scripts/run_supernode.py --index 0 / 1 / 2 (runtime API 9094+i).
+                                                 # CARD_REF_KEY is shared so the coordinator links the card across nodes;
+                                                 # the page on :4242 runs the ring across nodes (peer-only CORS). Not yet
+                                                 # verified live (built Sep 29 ~4:50pm); the one-node three-store path is.
     python -c "from cardguard.agentapp.launch import decide_over_flower; print(decide_over_flower('local-agent','latest'))"
 `flwr run . local-agent` refuses AgentApps ("a user prompt is required"); the launcher passes
 user_prompt via StartRunRequest exactly like `flwr chat` does. The SuperLink spawns

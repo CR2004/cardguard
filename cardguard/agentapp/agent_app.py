@@ -22,6 +22,7 @@ Timing: one pull of at most PULL_TIMEOUT seconds, inside the 5-minute task windo
 from __future__ import annotations
 
 import json
+import os
 import time
 import uuid
 from typing import Callable
@@ -80,6 +81,17 @@ def safe_wire_text(text: str) -> str:
 
 # ---------------------------------------------------------------- merchant role
 
+def merchant_api_for(context) -> str:
+    """This SuperNode's own merchant process. A run's config is shared by every node, so per-node settings win:
+    the SuperNode's `--node-config merchant-api=...`, then its CARDGUARD_MERCHANT_API environment, then the
+    run config, then the default (one node, one merchant on :4242)."""
+    node_cfg = getattr(context, "node_config", None)
+    candidates = [node_cfg.get("merchant-api") if hasattr(node_cfg, "get") else None,
+                  os.environ.get("CARDGUARD_MERCHANT_API"),
+                  context.run_config.get("agent.merchant-api") if hasattr(context, "run_config") else None]
+    return next((str(c).rstrip("/") for c in candidates if c), DEFAULT_MERCHANT_API)
+
+
 def fetch_facts(merchant_api: str, decision_id: str, purpose: str, http: Callable | None = None,
                 node_id: str = "") -> dict:
     """Ask this node's merchant process for the guarded facts of one decision (Ledger.disclose runs there).
@@ -98,7 +110,7 @@ def merchant_role(agent: AgentSession, context: Context, http: Callable | None =
         purpose, decision_id = str(question["purpose"]), str(question.get("decision_id", "latest"))
         if purpose not in PURPOSES:
             raise ValueError("unknown purpose")
-        merchant_api = str(context.run_config.get("agent.merchant-api", DEFAULT_MERCHANT_API))
+        merchant_api = merchant_api_for(context)
         facts = fetch_facts(merchant_api, decision_id, purpose, http, node_id=str(getattr(context, "node_id", "")))
         reply = {"purpose": purpose, "decision_id": decision_id, "facts": facts.get("facts"),
                  "merchant_id": str(facts.get("merchant_id", "")),

@@ -19,19 +19,23 @@ const post = <T,>(path: string, body?: unknown, headers: Record<string, string> 
     body: JSON.stringify(body ?? {}),
   }).then((r) => json<T>(r));
 
-// Human actions carry the reviewer credential that run_demo.py prints. It lives in this tab only.
+// Human actions carry the reviewer credential (REVIEWER_TOKEN in .env, or printed by run_demo.py). It is
+// remembered in this browser profile, so a demo laptop is asked once; a rejected credential is forgotten.
 const REVIEWER_KEY = 'cardguard.reviewer';
 export function reviewerToken(): string {
   try {
-    return sessionStorage.getItem(REVIEWER_KEY) ?? '';
+    return localStorage.getItem(REVIEWER_KEY) ?? sessionStorage.getItem(REVIEWER_KEY) ?? '';
   } catch {
     return '';
   }
 }
 export function setReviewerToken(token: string): void {
   try {
-    if (token) sessionStorage.setItem(REVIEWER_KEY, token);
-    else sessionStorage.removeItem(REVIEWER_KEY);
+    if (token) localStorage.setItem(REVIEWER_KEY, token);
+    else {
+      localStorage.removeItem(REVIEWER_KEY);
+      sessionStorage.removeItem(REVIEWER_KEY);
+    }
   } catch {
     /* storage blocked: the token is asked again next time */
   }
@@ -40,10 +44,11 @@ const asReviewer = () => ({ Authorization: `Bearer ${reviewerToken()}` });
 
 export const api = {
   config: () => get<Config>('/config'),
-  checkout: (body: CheckoutRequest) => post<CheckoutResult>('/checkout', body),
-  trace: (id: string, after: number) => get<TracePage>(`/trace/${id}?after=${after}`),
-  review: (id: string, action: 'approve' | 'decline') =>
-    post<CheckoutResult>(`/reviews/${id}/${action}`, {}, asReviewer()),
+  // `base` targets another merchant node of the demo network (one SuperNode per store); '' is this node.
+  checkout: (body: CheckoutRequest, base = '') => post<CheckoutResult>(`${base}/checkout`, body),
+  trace: (id: string, after: number, base = '') => get<TracePage>(`${base}/trace/${id}?after=${after}`),
+  review: (id: string, action: 'approve' | 'decline', base = '') =>
+    post<CheckoutResult>(`${base}/reviews/${id}/${action}`, {}, asReviewer()),
   ledger: () => get<LedgerPage>('/ledger'),
   payments: () => get<PaymentRow[]>('/payments'),
   alerts: () => get<{ alerts: AlertRow[] }>('/alerts'),

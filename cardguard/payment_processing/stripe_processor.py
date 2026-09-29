@@ -7,6 +7,7 @@ verification (nothing was charged yet). Test keys only: sk_live_ / pk_live_ are 
 """
 from __future__ import annotations
 
+import os
 import secrets
 import time
 
@@ -26,7 +27,11 @@ class StripeProcessor(ProcessorBase):
         self.sdk = sdk
         self.sdk.api_key = secret_key
         self.publishable_key = publishable_key
-        self._ref_key = secrets.token_bytes(32)  # card references are stable per process
+        # One network, one reference: with CARD_REF_KEY (hex) every merchant node derives the same letters-only
+        # reference for a card, so the coordinator's network memory can link sightings across nodes
+        # (run_demo mints one per demo). Without it, references are stable per process only.
+        key_hex = os.environ.get("CARD_REF_KEY", "")
+        self._ref_key = bytes.fromhex(key_hex) if key_hex else secrets.token_bytes(32)
 
     def card_ref(self, fingerprint: str) -> str:
         """The only card identity that leaves this adapter: a letters-only keyed hash of Stripe's card

@@ -36,11 +36,12 @@ interface Props {
   received: string | null;
   error: string | null;
   ring: RingStep[] | null;
+  ringStores: string[];
   stripeCard: RefObject<StripeCardHandle | null>;
 }
 
 export function TransactionPanel({ config, scenario, inputs, onScenario, onInputs, onRun, busy, after, tokenizing, received, error,
-  ring, stripeCard }: Props) {
+  ring, ringStores, stripeCard }: Props) {
   const country = COUNTRIES.find((c) => c.code === inputs.buyerCountry)?.name ?? inputs.buyerCountry;
   const chosen = SCENARIOS.find((s) => s.id === scenario);
   return (
@@ -78,7 +79,7 @@ export function TransactionPanel({ config, scenario, inputs, onScenario, onInput
         {error && <div className="error-note" role="alert">{error}</div>}
         {ring && (
           <ol className="ring-log" aria-label="Ring progress">
-            {config.stores.map((store, i) => {
+            {ringStores.map((store, i) => {
               const step = ring[i];
               return (
                 <li key={store} data-state={step ? step.outcome : 'pending'}>

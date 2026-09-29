@@ -6,6 +6,8 @@ export interface Config {
   vertical: string;
   federation: string | null;
   stores: string[];
+  port?: number;
+  peers?: { store: string; url: string }[]; // the other merchant nodes of this demo network, one SuperNode each
   bank_attestation: boolean; // a bank attestation node is configured (it never processes payments)
   publishable_key: string; // Stripe TEST publishable key
   demo_controls: boolean;
