@@ -52,6 +52,7 @@ export const StripeCard = forwardRef<StripeCardHandle, { publishableKey: string;
         if (cancelled || !window.Stripe || !host.current) return;
         stripe.current = window.Stripe(publishableKey);
         card.current = stripe.current.elements().create('card', {
+          disableLink: true, // no Link button over the expiry and CVC; this demo only takes Stripe's test cards
           style: {
             base: {
               color: '#F2F4FA', fontSize: '16px', iconColor: '#A399FF', fontWeight: '500',
