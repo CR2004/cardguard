@@ -1,12 +1,11 @@
-"""EXPERIMENT (branch specialists-experiment): fraud specialists, each learning one signal family.
+"""Four one-signal-family fraud models (transaction, identity, geo, behavior), trained merchant by merchant.
 
-Not wired into the demo. The live pipeline (fl.FEATURES, fl_weights.json, merchant.py, BAND_CUTS)
-is unchanged. This package answers one question offline: does a stack of specialists, each seeing
-only its own columns, beat every single specialist? Run it with
+Each merchant node loads its own vertical's weights from specialist_weights.json (live.py) and scores every
+checkout; the four bands are stacked into one banded fact, `specialist_stack_band`. Training and export are
+offline (export.py); federated.py and experiment.py measure the ways of training them.
 
-    python -m cardguard.specialists.experiment            # real IEEE-CIS, needs datasets/*.csv
-    python -m cardguard.specialists.experiment --synthetic
+    python -m cardguard.specialists.export            # writes specialist_weights.json
+    python -m cardguard.specialists.experiment        # measures local / FedAvg / FedAvg + fine-tune
 
-This is vertical (feature-partitioned) federation plus stacking, not FedAvg: the specialists hold
-different columns of the SAME transactions, and only a banded score would cross the wire.
+The FedAvg here is plain numpy simulating the five merchants in one process; it is not run on Flower SuperNodes.
 """

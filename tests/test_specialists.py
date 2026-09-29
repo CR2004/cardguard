@@ -1,10 +1,11 @@
-"""Specialist experiment (offline: synthetic data; the real CSVs are not needed)."""
+"""The specialists' data, features and merchant-by-merchant training (offline: synthetic data, no CSV needed)."""
 import numpy as np
 import pytest
 
 from cardguard.specialists import data as sdata
-from cardguard.specialists import experiment
+from cardguard.specialists import federated
 from cardguard.specialists.features import FAMILIES, build_families, history_features
+from cardguard.specialists.live import FEATURES
 from cardguard.specialists.model import BAND_NAMES, band_cuts, to_bands
 
 
@@ -18,40 +19,16 @@ def fam(raw):
     return build_families(raw)
 
 
-def _slice(raw, k):
-    return {key: (v[:k] if isinstance(v, np.ndarray) else v) for key, v in raw.items()}
-
-
-def test_identity_flags_parse_known_formats():
-    f = dict(zip(sdata.IDENT_NAMES, sdata.identity_flags({
-        "DeviceType": "mobile", "DeviceInfo": "SM-G960F Build/R16NW", "id_30": "Android 7.0",
-        "id_31": "samsung browser 6.2", "id_33": "1920x1080", "id_23": "IP_PROXY:ANONYMOUS",
-        "id_15": "New", "id_29": "NotFound"})))
-    assert f["mobile"] == f["dev_samsung"] == f["os_android"] == f["br_samsung"] == 1.0
-    assert f["proxy_anonymous"] == f["id15_new"] == f["id29_notfound"] == 1.0
-    assert f["desktop"] == f["dev_missing"] == f["os_missing"] == f["screen_missing"] == 0.0
-    assert 0 < f["screen_area"] <= 1
-
-
-def test_identity_flags_missing_row_is_all_missing_markers():
-    f = dict(zip(sdata.IDENT_NAMES, sdata.identity_flags({})))
-    assert f["dev_missing"] == f["os_missing"] == f["br_missing"] == f["screen_missing"] == 1.0
-    assert f["mobile"] == f["desktop"] == f["proxy_anonymous"] == 0.0
-
-
 def test_history_by_hand():
     raw = {"dt": np.array([0., 100, 200, 300, 200000, 400]),
            "amt": np.full(6, 50.0), "prod": np.zeros(6, dtype=int),
            "card": np.array([[1, 1, 1, 1]] * 5 + [[2, 1, 1, 1]], dtype=float),
-           "addr1": np.full(6, 100.0), "pemail": np.zeros(6, dtype=int), "remail": np.full(6, -1)}
+           "addr1": np.full(6, 100.0), "pemail": np.zeros(6, dtype=int)}
     h = history_features(raw)
     # time order: rows 0-3 (card 1, within 24h; velocity counts PRIOR rows), row 5 (card 2, t=400),
     # then row 4 (card 1 again, 2 days later: the earlier ones have aged out of the 24h window)
     assert h["velocity"].tolist() == [0.0, 0.1, 0.2, 0.3, 0.0, 0.0]
-    # card 2 shares (addr1, email) with card 1, and row 4 is processed after card 2 appeared
-    assert h["cards_per_pair"].tolist() == [0, 0, 0, 0, 1, 1]
-    assert h["cards_per_email"].tolist() == [0, 0, 0, 0, 1, 1] and h["emails_per_card"].max() == 0
-    assert h["loc_known"].tolist() == [0, 1, 1, 1, 1, 0] and h["loc_shift"].sum() == 0
+    assert h["prior_count"].tolist() == [0, 1, 2, 3, 4, 0]
 
 
 def test_history_has_no_lookahead(raw):
@@ -59,36 +36,31 @@ def test_history_has_no_lookahead(raw):
     k = 3000
     order = np.argsort(raw["dt"], kind="stable")
     prefix = order[:k]
-    sub = {key: (v[prefix] if isinstance(v, np.ndarray) and len(v) == len(order) else v)
-           for key, v in raw.items()}
+    sub = {key: (v[prefix] if isinstance(v, np.ndarray) and len(v) == len(order) else v) for key, v in raw.items()}
     full, part = history_features(raw), history_features(sub)
     for name in full:
         assert np.array_equal(full[name][prefix], part[name]), name
 
 
 def test_test_period_rows_never_shape_training_features(raw):
-    """Cuts, caps and rarity come from training rows only: distorting test-period rows leaves train rows alone."""
+    """Cutoffs and caps come from training rows only: distorting test-period rows leaves train rows alone."""
     a = build_families(raw)
-    bent = dict(raw)
     test = a["is_test"]
+    bent = dict(raw)
     bent["amt"] = np.where(test, raw["amt"] * 1000 + 7, raw["amt"])
-    bent["dist1"] = np.where(test, 1e6, raw["dist1"])
-    bent["pemail"] = np.where(test, 3, raw["pemail"])
+    bent["addr2"] = np.where(test, 12.0, raw["addr2"])
     b = build_families(bent)
     assert np.array_equal(a["is_test"], b["is_test"])
-    for name in ("transaction", "identity", "geo"):
+    for name in FAMILIES:
         assert np.array_equal(a["families"][name]["X"][~test], b["families"][name]["X"][~test]), name
 
 
-def test_families_bounded_named_and_device_abstains(fam, raw):
-    assert list(fam["families"]) == FAMILIES
+def test_families_are_exactly_what_the_live_node_computes(fam):
+    assert FAMILIES == list(FEATURES)
     for name, f in fam["families"].items():
-        assert f["X"].shape[1] == len(f["names"]) and len(set(f["names"])) == len(f["names"]), name
+        assert f["names"] == FEATURES[name] and f["X"].shape[1] == len(FEATURES[name])
         assert 0 <= f["X"].min() and f["X"].max() <= 1, name
-    dev = fam["families"]["device"]
-    assert dev["covered"].tolist() == raw["has_identity"].tolist()
-    assert not dev["X"][~dev["covered"]].any()  # no identity row -> no device evidence, not fake evidence
-    assert 0.2 < dev["covered"].mean() < 0.4
+    assert fam["caps"]["prior_count"] >= 1
 
 
 def test_bands_use_the_closed_vocabulary():
@@ -99,55 +71,13 @@ def test_bands_use_the_closed_vocabulary():
     assert 0.03 < (b == 2).mean() < 0.07 and 0.13 < (b == 1).mean() < 0.17
 
 
-def test_stack_beats_every_single_specialist(fam, monkeypatch):
-    monkeypatch.setenv("SPECIALISTS_SKIP_BASELINE", "1")
-    r = experiment.run(fam, epochs=200)
-    best = max(v["auc"] for v in r["single"].values())
-    assert r["stack_scores"]["auc"] > best + 0.05
-    assert r["stack_bands"]["auc"] > best + 0.05  # the version that only ships low/medium/high
-    assert r["single"]["merchant"]["auc"] < 0.6  # a specialist with no signal stays uninformative
-    assert r["single"]["device"]["coverage"] < 0.4
-    assert set(r["ablation"]) == {f"without_{n}" for n in r["single"]}
-    assert "STACK (scores)" in experiment.report(r)
-
-
-def test_unknown_model_is_rejected():
-    from cardguard.specialists.model import fit_model
-    with pytest.raises(ValueError):
-        fit_model("forest", np.zeros((10, 2)), np.zeros(10))
-
-
-def test_lgbm_specialists_run_and_stack_still_wins(fam, monkeypatch):
-    pytest.importorskip("lightgbm")
-    monkeypatch.setenv("SPECIALISTS_SKIP_BASELINE", "1")
-    r = experiment.run(fam, epochs=100, model="lgbm")
-    assert r["model"] == "lgbm"
-    assert r["stack_scores"]["auc"] > max(v["auc"] for v in r["single"].values()) + 0.03
-
-
-def test_deployable_subset_names_exist_and_drop_vesta_only_families(fam):
-    from cardguard.specialists.features import DEPLOYABLE, restrict
-    for family, allowed in DEPLOYABLE.items():
-        names = fam["families"][family]["names"]
-        for a in allowed:
-            assert any(n == a or (a.endswith("=") and n.startswith(a)) for n in names), (family, a)  # no typos
-    small = restrict(fam)
-    assert "device" not in small["families"] and "network" not in small["families"]
-    assert not any(n.startswith("C") and n[1:].isdigit() for n in small["families"]["transaction"]["names"])
-    assert all(small["families"][k]["X"].shape[0] == len(fam["y"]) for k in small["families"])
-
-
-# ---------- federated measurement (specialists trained with FedAvg across merchants) ----------
-
 def test_fedavg_weights_is_the_row_weighted_mean():
-    from cardguard.specialists.federated import fedavg_weights
-    w = fedavg_weights([(np.array([0.0, 4.0]), 1), (np.array([4.0, 0.0]), 3)])
+    w = federated.fedavg_weights([(np.array([0.0, 4.0]), 1), (np.array([4.0, 0.0]), 3)])
     assert np.allclose(w, [3.0, 1.0])
 
 
 def test_each_federated_client_trains_only_on_its_own_rows(monkeypatch):
     """The server side only ever sees weight vectors: fit_logistic is called with one client's rows at a time."""
-    from cardguard.specialists import federated
     rng = np.random.default_rng(0)
     parts = [(rng.random((n, 3)), (rng.random(n) < 0.1).astype(float)) for n in (40, 70, 55)]
     seen = []
@@ -163,12 +93,10 @@ def test_each_federated_client_trains_only_on_its_own_rows(monkeypatch):
     assert w.shape == (4,) and np.isfinite(w).all()
 
 
-def test_federated_measurement_runs_and_federation_beats_training_alone(fam):
-    from cardguard.specialists.federated import MODES, report, run_federated
-    r = run_federated(fam, epochs=150, rounds=25, local_epochs=4)
-    assert set(r["stack_scores"]) == set(MODES) and set(r["stack_bands"]) == set(MODES)
-    assert set(r["merchants"]) == set(fam["vert_names"])
-    fed, cen, loc = (r["stack_scores"][m]["auc"] for m in ("federated", "central", "local"))
-    assert fed > loc + 0.01          # merchants gain from federating
-    assert fed > cen - 0.05          # and lose little against pooling every row in one place
-    assert "personalised" in report(r)
+def test_merchant_by_merchant_measurement_runs_and_stacking_beats_any_one_specialist(fam):
+    r = federated.run_federated(fam, epochs=150, rounds=25, local_epochs=4, with_original=False)
+    assert set(r["stack"]) == set(federated.MODES) and set(r["merchants"]) == set(fam["vert_names"])
+    for mode in federated.MODES:
+        assert r["stack"][mode]["auc"] > max(r["specialist_auc"][mode].values()) + 0.02  # the families complement
+    assert r["stack"]["federated"]["auc"] > r["stack"]["local"]["auc"]  # merchants gain from federating
+    assert "personalised" in federated.report(r)

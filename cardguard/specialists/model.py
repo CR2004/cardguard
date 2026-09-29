@@ -1,7 +1,7 @@
-"""Logistic regression with Adam, banding, and the metrics the experiment reports.
+"""Logistic regression with Adam, banding, and the metrics the measurements report.
 
-Adam (not fl.local_train's plain gradient step) because the stacker's inputs are not all in [0, 1]
-and the C-count features are skewed; it converges without hand-tuning the learning rate per family.
+Adam (not fl.local_train's plain gradient step) so the fits converge without hand-tuning a learning rate per
+feature family.
 """
 from __future__ import annotations
 
@@ -34,45 +34,8 @@ def fit_logistic(X: np.ndarray, y: np.ndarray, epochs: int = 300, lr: float = 0.
     return w
 
 
-class _Logistic:
-    def __init__(self, w):
-        self.w = w
-
-    def predict(self, X):
-        return predict(self.w, X)
-
-
-class _Lgbm:
-    def __init__(self, m):
-        self.m = m
-
-    def predict(self, X):
-        return self.m.predict_proba(X)[:, 1]
-
-
-MODELS = ("logistic", "lgbm")
-
-
-def fit_model(kind: str, X: np.ndarray, y: np.ndarray, epochs: int = 300):
-    """A fitted specialist with .predict(X) -> P(fraud). 'lgbm' is optional (pip install lightgbm scikit-learn)."""
-    if kind == "logistic":
-        return _Logistic(fit_logistic(X, y, epochs=epochs))
-    if kind == "lgbm":
-        import lightgbm as lgb  # imported here so the rest of the package needs only numpy
-        m = lgb.LGBMClassifier(n_estimators=300, learning_rate=0.05, num_leaves=31, min_child_samples=100,
-                               subsample=0.8, subsample_freq=1, colsample_bytree=0.8, reg_lambda=1.0,
-                               verbose=-1, n_jobs=-1, random_state=0)
-        return _Lgbm(m.fit(X, y))
-    raise ValueError(f"unknown model {kind!r}; choose from {MODELS}")
-
-
 def predict(w: np.ndarray, X: np.ndarray) -> np.ndarray:
     return sigmoid(X @ w[1:] + w[0])
-
-
-def logit(p: np.ndarray) -> np.ndarray:
-    p = np.clip(p, 1e-6, 1 - 1e-6)
-    return np.log(p / (1 - p))
 
 
 def band_cuts(scores: np.ndarray, medium_share: float = 0.20, high_share: float = 0.05) -> tuple:
@@ -92,6 +55,4 @@ def recall_at_top(y: np.ndarray, p: np.ndarray, share: float = 0.05) -> float:
     return float(y[top].sum() / max(y.sum(), 1))
 
 
-__all__ = ["BAND_NAMES", "MODELS", "auc", "band_cuts", "fit_logistic", "fit_model", "logit", "predict",
-           "recall_at_top",
-           "sigmoid", "to_bands"]
+__all__ = ["BAND_NAMES", "auc", "band_cuts", "fit_logistic", "predict", "recall_at_top", "sigmoid", "to_bands"]

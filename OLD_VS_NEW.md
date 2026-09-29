@@ -1,7 +1,7 @@
 # CardGuard: what it was, what changed, and how the pieces fit
 
 A plain-words guide for the team. For the measured numbers and caveats see the
-[Fraud specialists section of the README](README.md#fraud-specialists-experiment-branch-specialists-experiment).
+[Fraud specialists section of the README](README.md#fraud-specialists-four-models-trained-merchant-by-merchant).
 
 ## The goal
 
@@ -111,23 +111,28 @@ coordinator: rules score + Jev's vote, more cautious wins  -->  verdict computed
                           later: a retrain round spreads the lesson to the other merchants
 ```
 
-## Where the model got better, honestly
+## Where the model got better
 
-**Not much on accuracy.**
+Measured on the held-out last 20% of the dataset, per merchant (AUC):
 
-- With **every column the dataset offers**, the specialists reach AUC **0.866** against **0.773** for the old model.
-  But those columns (purchase counters, match flags, device recognition) were engineered by the company that owned
-  the data, and **our checkout does not collect them**.
-- With only what **our checkout can really compute**, the specialists score about **0.77**, the same as the old model.
+| | All | W | H | C | S | R |
+|---|---|---|---|---|---|---|
+| Original model | 0.768 | 0.726 | 0.536 | 0.635 | 0.381 | 0.565 |
+| **Specialists, FedAvg + fine-tune (live)** | **0.774** | 0.717 | 0.548 | 0.623 | **0.525** | **0.647** |
 
-What did get better:
+- **Overall it is level** (0.774 against 0.768). The specialists catch a little more of the fraud in the top 5% of
+  scores (25% against 22%).
+- **The clear gain is at the small merchants:** S goes from 0.381 to 0.525 and R from 0.565 to 0.647. The two
+  biggest merchants are slightly worse (W by 0.009, C by 0.012).
+- **The fine-tune step is what makes it work.** Plain FedAvg gives a shared model that points the wrong way for a
+  feature whose meaning differs by merchant (country mismatch: AUC 0.344 for that specialist). Letting each
+  merchant adjust the shared weights on its own rows fixes it (0.694).
+
+What else got better:
 
 - **Explainability:** a reviewer sees which signal family fired.
-- **Per-merchant tuning:** fine-tuning helps the small merchants (for example merchant S: 0.525 with fine-tuning,
-  0.344 without).
 - **Human oversight:** fraud flags can be reviewed, and reviews become audited labels.
-- **Groundwork:** the design is ready for richer signals (device, identity, geography providers) if they become
-  available.
+- **Groundwork:** the design can take more signals later without changing how the pieces connect.
 
 ## Two things to be clear about
 

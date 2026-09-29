@@ -8,7 +8,7 @@ from cardguard.decision.coordinator import rules
 from cardguard.decision.guard import WIRE_SCHEMA, WireViolation, strip_for_wire
 from cardguard.payment_processing import merchant
 from cardguard.specialists import live
-from cardguard.specialists.features import DEPLOYABLE, build_families, history_features
+from cardguard.specialists.features import build_families, history_features
 from cardguard.specialists.live import FEATURES, STACK_ORDER, CardHistory, Specialists, build_features
 from tests.test_merchant import MASTER_DE, VISA, buy, client  # noqa: F401 - client is a fixture
 
@@ -68,8 +68,10 @@ def test_build_features_covers_every_model_input_and_matches_definitions():
 
 
 def test_live_features_are_exactly_the_training_features():
-    """DEPLOYABLE (what training may use) and FEATURES (what the node computes) must never drift apart."""
-    assert {k: list(v) for k, v in DEPLOYABLE.items()} == {k: list(v) for k, v in FEATURES.items()}
+    """What training builds and what the node computes must never drift apart."""
+    from cardguard.specialists import data as sdata
+    fam = build_families(sdata.synthetic_raw(n=2000, seed=5))
+    assert {k: v["names"] for k, v in fam["families"].items()} == {k: list(v) for k, v in FEATURES.items()}
 
 
 def test_missing_disabled_or_broken_file_means_no_specialists(tmp_path, monkeypatch, capsys):

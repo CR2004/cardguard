@@ -9,7 +9,7 @@ high, the next 15% medium), like the existing model_risk_band: a "high" then mea
 merchant. Per-merchant cuts would force ~5% high everywhere and erase that fraud rates differ about 5x across
 merchants (pooled AUC fell from 0.77 to 0.59 when tried). The stacker is logistic regression on the four bands,
 trained on the stack period. Nothing here touches the test period; the reported metrics are on it. Needs
-datasets/ (see cardguard.specialists.experiment).
+datasets/train_transaction.csv (see cardguard.specialists.experiment).
 """
 from __future__ import annotations
 
@@ -21,10 +21,10 @@ import numpy as np
 
 from cardguard import ROOT
 from cardguard.specialists import data as sdata
-from cardguard.specialists.experiment import _load, _split
+from cardguard.specialists.experiment import _load
 from cardguard.specialists.federated import (FINETUNE_EPOCHS, FINETUNE_LR, LOCAL_EPOCHS, ROUNDS,
-                                             _safe_auc, fedavg_train)
-from cardguard.specialists.features import build_families, restrict
+                                             _safe_auc, _split, fedavg_train)
+from cardguard.specialists.features import build_families
 from cardguard.specialists.live import STACK_ORDER
 from cardguard.specialists.model import auc, band_cuts, fit_logistic, predict, recall_at_top, to_bands
 
@@ -37,7 +37,6 @@ def _r(a) -> list:
 
 def train_live(fam: dict, mode: str = "personalised", rounds: int = ROUNDS, local_epochs: int = LOCAL_EPOCHS,
                epochs: int = 300) -> dict:
-    fam = restrict(fam)
     y, vert = fam["y"], fam["vert"]
     fit, stack, test = _split(fam)
     verts = [(code, nm) for code, nm in enumerate(fam["vert_names"]) if (vert == code).any()]
