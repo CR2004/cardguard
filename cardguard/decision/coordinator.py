@@ -8,6 +8,7 @@ The final verdict is computed in code:
   - a failed card security code check is a hard decline before any vote
   - rules and Jev each vote; the more cautious verdict wins
   - an 'approve' with Jev confidence below MIN_APPROVE_CONFIDENCE becomes 'step_up'
+  - round 2 (travel_check=implausible from the bank) raises an 'approve' to 'step_up', never to 'decline'
   - no TYPESAFE_API_KEY, or Jev errors -> rules alone decide (the verdict records decided_by and jev_error)
 """
 from __future__ import annotations
@@ -18,11 +19,16 @@ from cardguard.decision.guard import WireViolation, strip_for_wire
 
 SEVERITY = {"approve": 0, "step_up": 1, "decline": 2}
 MIN_APPROVE_CONFIDENCE = 0.8
+REVIEW_AT, DECLINE_AT = 3, 8  # risk points: a person reviews from REVIEW_AT, rules decline from DECLINE_AT
 JEV_ATTEMPTS = 2  # one retry on a malformed or failed answer, then rules decide alone
 
 # Facts that decline on their own. A failed CVC check means whoever entered the
 # card did not have the printed code; that is a stolen number, not a typo.
 HARD_DECLINE = {("cvc_check", "fail")}
+
+# Round 2 evidence can only add caution: it puts a person in the loop, never declines on its own.
+REVIEW_FLOOR = {("travel_check", "implausible")}
+TRAVEL_PURPOSE = "travel-check"  # the one targeted follow-up question
 
 WEIGHTS = {
     ("amount_band", "medium"): 1, ("amount_band", "high"): 2,
@@ -36,6 +42,9 @@ WEIGHTS = {
     ("model_risk_band", "medium"): 1, ("model_risk_band", "high"): 2,
     # the network agent's view: the same card at several merchants within minutes is card testing
     ("network_velocity_band", "medium"): 1, ("network_velocity_band", "high"): 5,
+    # the bank's round-1 attestation about the cardholder (unknown = the bank did not answer: no points)
+    ("issuer_behavior", "medium"): 1, ("issuer_behavior", "high"): 2,
+    ("issuer_recent_declines", "some"): 1, ("issuer_recent_declines", "many"): 2,
 }
 
 FACT_MEANINGS = {
@@ -47,11 +56,15 @@ FACT_MEANINGS = {
     "new_customer": "first time this merchant has seen this card",
     "model_risk_band": "fraud risk from a federated model trained across merchants",
     "network_velocity_band": "how many different merchants saw this same card in the last ten minutes: low one, medium two, high three or more",
+    "issuer_behavior": "the card-issuing bank's view of how unusual this cardholder's recent activity is",
+    "issuer_recent_declines": "how many of this card's recent payments the issuing bank declined",
 }
+# travel_check (round 2) is deliberately absent: the model never sees it, so round-2 evidence can only
+# reach the verdict through REVIEW_FLOOR and can never tip a vote to decline.
 
 
 # Every reason a verdict may ever cite. explain.py drops anything else before a model sees it.
-ALLOWED_CITES = {f"{k}={v}" for (k, v) in [*WEIGHTS, *HARD_DECLINE]}
+ALLOWED_CITES = {f"{k}={v}" for (k, v) in [*WEIGHTS, *HARD_DECLINE, *REVIEW_FLOOR]}
 
 
 class Verifier:
@@ -86,8 +99,30 @@ def rules(facts: dict) -> dict:
         return {"decision": "decline", "score": None, "cites": hard, "hard": True}
     cites = [f"{k}={v}" for (k, v) in WEIGHTS if facts.get(k) == v]
     score = sum(WEIGHTS[(k, v)] for (k, v) in WEIGHTS if facts.get(k) == v)
-    decision = "decline" if score >= 8 else "step_up" if score >= 3 else "approve"
-    return {"decision": decision, "score": score, "cites": cites}
+    decision = "decline" if score >= DECLINE_AT else "step_up" if score >= REVIEW_AT else "approve"
+    floor = [f"{k}={v}" for (k, v) in REVIEW_FLOOR if facts.get(k) == v]
+    if floor and decision == "approve":
+        decision = "step_up"
+    return {"decision": decision, "score": score, "cites": cites + floor}
+
+
+def hold_unanswered(verdict: dict) -> dict:
+    """Round 2 was needed but no verified answer came back: a person decides, never an automatic approve."""
+    held = {**verdict, "round_2_unanswered": True}
+    if verdict["decision"] == "approve":
+        held["decision"] = "step_up"
+    return held
+
+
+def needs_travel_check(facts: dict) -> bool:
+    """Round 2 trigger. The store places the buyer outside the card's country, while the card checks
+    pass and the bank sees an ordinary cardholder (or a configured bank did not answer, "unknown": then
+    round 2 goes unanswered and a person decides). Only the bank can settle it, from history it never
+    shares. No bank facts at all (no bank configured) means no round 2. Skipped when the rules already
+    decline, since the answer can only add caution."""
+    return (facts.get("country_mismatch") == "yes" and facts.get("cvc_check") == "pass"
+            and facts.get("issuer_behavior") in {"low", "unknown"}
+            and "travel_check" not in facts and rules(facts)["decision"] != "decline")
 
 
 def _jev_state(facts: dict) -> dict:

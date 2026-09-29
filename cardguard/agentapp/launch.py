@@ -18,6 +18,8 @@ from cardguard import ROOT
 log = logging.getLogger(__name__)
 VERDICT_EVENT = "cardguard.verdict"
 DEFAULT_PROMPT = "Decide the pending card payment with the merchant node."
+FINISH_GRACE = 10.0  # seconds to let a run finish after its verdict: its context.state (the network
+                     # table) is saved when the run ends, and the next decision must see it
 
 
 @functools.lru_cache(maxsize=1)
@@ -71,7 +73,17 @@ def _start_run(stub, superlink: str, decision_id: str, prompt: str, app_path: st
     series = load_series(superlink)
     if series is not None:
         req.series_id = series  # same series => the coordinator's context.state carries over
-    res = stub.StartRun(req)
+    try:
+        res = stub.StartRun(req)
+    except Exception:  # noqa: BLE001 - retried below, else raised to the caller as before
+        if series is None:
+            raise
+        try:
+            res = stub.StartRun(req)  # a transient failure keeps the series, and the network memory with it
+        except Exception:  # noqa: BLE001 - a restarted SuperLink no longer knows the saved series
+            log.warning("SuperLink refused run series %s twice; starting a new series (network memory resets)", series)
+            req.ClearField("series_id")
+            res = stub.StartRun(req)
     if not res.HasField("run_id"):
         raise RuntimeError("SuperLink did not start the run")
     if res.HasField("series_id"):
@@ -94,10 +106,21 @@ def _client(superlink: str):
 
 def decide_over_flower(superlink: str, decision_id: str, timeout: float = 240.0,
                        prompt: str = DEFAULT_PROMPT, app_path: str = str(ROOT), overrides: tuple = (),
-                       client: Callable[[str], Any] = _client, start_run=_start_run, events=_events) -> dict | None:
+                       client: Callable[[str], Any] = _client, start_run=_start_run, events=_events,
+                       on_event: Callable[[str, dict], None] | None = None) -> dict | None:
     """Run the coordinator AgentApp for one decision; return its verdict, or None on any failure.
-    Never raises: the merchant node falls back to deciding in-process and records that it did."""
+    Never raises: the merchant node falls back to deciding in-process and records that it did.
+    on_event sees every run event as it streams (plus "run.started" / "run.finished"): display only.
+    After the verdict, waits up to FINISH_GRACE for the run to finish so its state is saved."""
     result: dict = {}
+    settled = threading.Event()  # a verdict, an error, or the end of the stream
+
+    def notify(kind: str, payload: dict) -> None:
+        if on_event is not None:
+            try:
+                on_event(kind, payload)
+            except Exception:  # noqa: BLE001 - a display sink never affects the decision
+                pass
 
     def worker() -> None:
         stub = None
@@ -106,17 +129,23 @@ def decide_over_flower(superlink: str, decision_id: str, timeout: float = 240.0,
             run_id = start_run(stub, superlink, decision_id, prompt, app_path, overrides) if overrides else \
                 start_run(stub, superlink, decision_id, prompt, app_path)
             result["run_id"] = run_id
+            notify("run.started", {"run_id": run_id})
             for event_type, payload in events(stub, run_id):
                 result["last_event"] = event_type
+                notify(event_type, payload)
+                if "verdict" in result:
+                    continue  # draining until the run finishes
                 if event_type == VERDICT_EVENT and isinstance(payload.get("verdict"), dict):
                     result["verdict"] = payload["verdict"]
-                    return
-                if event_type in {"error", "response.failed"}:
+                    settled.set()
+                elif event_type in {"error", "response.failed"}:
                     result["error"] = payload
                     return
+            notify("run.finished", {"run_id": run_id})  # the stream ends when the run has finished
         except Exception as e:  # noqa: BLE001 - any failure means "no verdict from the federation"
             result["error"] = f"{type(e).__name__}: {e}"
         finally:
+            settled.set()
             if stub is not None:
                 try:
                     stub.close()
@@ -125,9 +154,10 @@ def decide_over_flower(superlink: str, decision_id: str, timeout: float = 240.0,
 
     t = threading.Thread(target=worker, daemon=True)
     t.start()
-    t.join(timeout)
-    if t.is_alive():
+    if not settled.wait(timeout):
         result["error"] = "timed out waiting for the federation"
+    elif "verdict" in result:
+        t.join(FINISH_GRACE)  # back-to-back decisions: the next run must start from this run's saved state
     if "verdict" not in result:
         log.warning("no verdict from %s for decision %s: %s (last event: %s); check the SuperLink log",
                     superlink, decision_id, result.get("error"), result.get("last_event"))
