@@ -300,7 +300,8 @@ def coordinator_role(agent: AgentSession, context: Context) -> dict:
         accepted = str(verdict.get("merchant_id", "")).split(":", 1)[0] if verdict.get("decided_by") != "no_facts" else ""
         show_round_one(accepted, verdict.get("facts"))
     verdict["explanation"] = explain(verdict) if verdict.get("decided_by") != "no_facts" else \
-        {"text": "Sent to a human reviewer because no verified facts arrived from the merchant.", "by": "template"}
+        {"text": "Sent to a human reviewer because no verified facts arrived from the merchant.", "by": "template",
+         "error": "not_asked"}
     verdict["decision_id"] = decision_id
     line = "CARDGUARD_VERDICT " + json.dumps(verdict, separators=(",", ":"), default=str)
     print(line, flush=True)

@@ -28,6 +28,13 @@ describe('steps: the rail is a function of real events only', () => {
     expect(state([], withPm).intake).toBe('pending');
   });
 
+  it('the token step names the payment-method id Stripe actually returned, shortened', () => {
+    const tok = (pm: string | null) => steps([], { ...idle, paymentMethod: pm }).find((s) => s.id === 'token')?.detail;
+    expect(tok('pm_1ULAEabcdefghijkl')).toBe('pm_1UL… received');
+    expect(tok('pm_visa')).toBe('pm_visa received');
+    expect(tok(null)).toBe('Stripe Elements');
+  });
+
   it('a step that is done stays done as more real events arrive', () => {
     let before = new Set<StepId>();
     for (let k = 0; k <= events.length; k++) {

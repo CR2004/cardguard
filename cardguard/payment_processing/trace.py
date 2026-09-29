@@ -178,8 +178,17 @@ def gate_report(verdict: dict, facts: dict) -> dict:
                 line("model", "info", "No model vote configured: rules decide alone")
     contributions = [{"fact": f"{k}={v}", "points": coord.WEIGHTS.get((k, v), 0), "party": PARTY_OF.get(k, "store")}
                      for (k, v) in [c.split("=", 1) for c in verdict.get("cites", []) if "=" in c]]
+    jev = verdict.get("jev")
+    # Jev's advisory vote as structured data for the page (the "model" line above says the same in words)
+    rules_said = verdict.get("rules_decision")
+    advisory = ({"action": jev["action"], "confidence": round(float(jev.get("confidence") or 0), 2),
+                 # the vote itself (or its low confidence) made the verdict more cautious than the rules alone
+                 "raised": bool(verdict.get("confidence_gated")) or (
+                     rules_said in coord.SEVERITY and coord.SEVERITY[jev["action"]] > coord.SEVERITY[rules_said])}
+                if isinstance(jev, dict) and jev.get("action") in coord.SEVERITY
+                else {"unavailable": True} if verdict.get("jev_error") else None)
     return {"decision": decision, "decided_by": verdict.get("decided_by"), "score": verdict.get("score"),
-            "lines": lines, "contributions": contributions, "parties": party_view(facts),
+            "lines": lines, "contributions": contributions, "parties": party_view(facts), "jev": advisory,
             "round_2": "travel_check" in facts or bool(verdict.get("round_2_unanswered"))}
 
 
@@ -216,4 +225,6 @@ def record_flower_event(trace: Trace, kind: str, payload: dict) -> None:
 def record_gate(trace: Trace, verdict: dict, facts: dict, via: str) -> None:
     explanation = verdict.get("explanation") if isinstance(verdict.get("explanation"), dict) else {}
     trace.add("gate.decision", src="coordinator", dst="gate", via=via, **gate_report(verdict, facts),
-              explanation={"text": str(explanation.get("text", ""))[:400], "by": str(explanation.get("by", ""))[:60]})
+              explanation={"text": str(explanation.get("text", ""))[:400], "by": str(explanation.get("by", ""))[:60],
+                           "via": str(explanation.get("via", ""))[:20],  # which endpoint answered: "flower" or "custom"
+                           "error": str(explanation.get("error", ""))[:40]})  # why the template stood in, if it did

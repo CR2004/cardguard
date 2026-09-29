@@ -75,7 +75,9 @@ export function steps(events: TraceEvent[], client: ClientSide): Step[] {
 
   // 1. Stripe Elements turns the card into a payment-method id (the page's own call to Stripe)
   if (client.tokenizing) out.token = { state: 'active', detail: 'Stripe is tokenizing' };
-  else if (client.paymentMethod || started) out.token = { state: 'done', detail: 'Payment method' };
+  // the real id Stripe returned to this page, shortened: "pm_1UL… received"
+  else if (client.paymentMethod) out.token = { state: 'done', detail: `${client.paymentMethod.length > 10 ? `${client.paymentMethod.slice(0, 6)}…` : client.paymentMethod} received` };
+  else if (started) out.token = { state: 'done', detail: 'Payment method' };
   else if (client.failed) out.token = { state: 'failed', detail: 'No payment method', tone: 'bad' };
   else out.token = { state: 'pending', detail: 'Stripe Elements' };
 

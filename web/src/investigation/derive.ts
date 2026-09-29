@@ -1,7 +1,7 @@
 // The whole picture is a pure function of the trace events applied so far. There is no other
 // animation state: a packet, a node's state, a chip or a gate line exists only because a real
 // backend event says so, and the player (useInvestigation) decides only how fast they are applied.
-import type { Bands, Decision, GateLine, PartySignal, TraceEvent } from '../api/types';
+import type { Bands, Decision, GateLine, JevVote, PartySignal, TraceEvent } from '../api/types';
 
 export type NodeId = 'tx' | 'store' | 'bank' | 'coordinator' | 'network' | 'gate' | 'human';
 export type NodeStatus =
@@ -47,7 +47,8 @@ export interface GateView {
   score: number | null;
   lines: GateLine[];
   parties: PartySignal[];
-  explanation?: { text: string; by: string };
+  explanation?: { text: string; by: string; via?: string; error?: string };
+  jev?: JevVote | null;
 }
 
 export interface EdgeView {
@@ -146,6 +147,7 @@ export function factLabel(key: string): string {
     amount_band: 'Amount', country_mismatch: 'Country mismatch', velocity_band: 'Velocity 24 h',
     new_customer: 'New customer', model_risk_band: 'Federated model', network_velocity_band: 'Network velocity',
     issuer_behavior: 'Bank: behaviour', issuer_recent_declines: 'Bank: recent declines',
+    specialist_stack_band: 'Specialist models',
   } as Record<string, string>)[key] ?? pretty(key);
 }
 
@@ -154,7 +156,22 @@ export function shortLabel(key: string): string {
     cvc_check: 'CVC', card_funding: 'Funding', travel_check: 'Travel', amount_band: 'Amount',
     country_mismatch: 'Country diff', velocity_band: 'Velocity', new_customer: 'New', model_risk_band: 'Model',
     network_velocity_band: 'Velocity', issuer_behavior: 'Behaviour', issuer_recent_declines: 'Declines',
+    specialist_stack_band: 'Specialists',
   } as Record<string, string>)[key] ?? pretty(key);
+}
+
+export type Explainer = { kind: 'endeavor' | 'model'; model: string }
+  | { kind: 'template'; reason: 'unavailable' | 'rejected' | 'not_asked' };
+
+/** Who wrote the explanation, from the gate event itself: Endeavor is named only when Flower's endpoint
+ *  answered with the Endeavor model, never from the model id alone. */
+export function explainerOf(gate: Pick<GateView, 'explanation'>): Explainer | null {
+  const ex = gate.explanation;
+  if (!ex?.text || !ex.by) return null;
+  if (ex.by === 'template') {
+    return { kind: 'template', reason: ex.error === 'rejected_output' ? 'rejected' : ex.error === 'not_asked' ? 'not_asked' : 'unavailable' };
+  }
+  return { kind: /endeavor/i.test(ex.by) && ex.via === 'flower' ? 'endeavor' : 'model', model: ex.by };
 }
 
 /** What Stripe did with the money, from payment.settled; a void that Stripe did not confirm never reads as voided. */
@@ -401,7 +418,7 @@ export function applyEvent(prev: Investigation, e: TraceEvent, vocabulary: Recor
       s.phase = 'gate';
       s.gate = {
         decision: e.decision ?? 'step_up', decidedBy: e.decided_by ?? 'rules', score: e.score ?? null,
-        lines: e.lines ?? [], parties: e.parties ?? [], explanation: e.explanation,
+        lines: e.lines ?? [], parties: e.parties ?? [], explanation: e.explanation, jev: e.jev ?? null,
       };
       for (const c of e.contributions ?? []) {
         const x = s.evidence.find((it) => it.key === c.fact.split('=')[0]);
