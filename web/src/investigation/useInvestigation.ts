@@ -30,7 +30,7 @@ type Action =
   | { type: 'advance' }
   | { type: 'skip' }
   | { type: 'replay' }
-  | { type: 'result'; result: CheckoutResult }
+  | { type: 'result'; result: CheckoutResult; traceId?: string }
   | { type: 'error'; error: string };
 
 const initial: State = {
@@ -41,7 +41,7 @@ const initial: State = {
 function reducer(s: State, a: Action): State {
   switch (a.type) {
     case 'tokenizing':
-      return { ...s, status: 'tokenizing', error: null };
+      return { ...initial, status: 'tokenizing', runs: s.runs };
     case 'start':
       return { ...initial, status: 'running', traceId: a.traceId, ciphertext: a.ciphertext, runs: s.runs + 1 };
     case 'page': {
@@ -58,8 +58,8 @@ function reducer(s: State, a: Action): State {
       return { ...s, applied: s.events.length };
     case 'replay':
       return { ...s, applied: 0 };
-    case 'result':
-      return { ...s, result: a.result };
+    case 'result': // a late answer to an earlier checkout never lands in a newer one
+      return a.traceId && a.traceId !== s.traceId ? s : { ...s, result: a.result };
     case 'error':
       return { ...s, status: s.traceId ? 'running' : 'error', error: a.error };
   }
@@ -124,7 +124,8 @@ export function useInvestigation(config: Config | null) {
     () => derive(state.events.slice(0, Math.max(0, state.applied - 1)), mode, vocabulary ?? {}, state.rawCardShared),
     [state.events, state.applied, mode, vocabulary, state.rawCardShared],
   );
-  const gateKey = state.events.slice(0, state.applied).find((e) => e.kind === 'gate.decision')?.seq ?? -1;
+  // the latest gate: after a Flower fallback the store node's own gate supersedes the unbound one
+  const gateKey = [...state.events.slice(0, state.applied)].reverse().find((e) => e.kind === 'gate.decision')?.seq ?? -1;
 
   const run = useCallback(async (input: RunInput, getCiphertext: () => Promise<string>): Promise<CheckoutResult | null> => {
     dispatch({ type: 'tokenizing' });
@@ -140,7 +141,7 @@ export function useInvestigation(config: Config | null) {
     dispatch({ type: 'start', traceId, ciphertext: blob });
     try {
       const result = await api.checkout({ ...input, blob, trace_id: traceId });
-      dispatch({ type: 'result', result });
+      dispatch({ type: 'result', result, traceId });
       if (result.error) dispatch({ type: 'error', error: result.error });
       return result;
     } catch (err) {

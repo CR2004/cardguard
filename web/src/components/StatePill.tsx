@@ -1,4 +1,3 @@
-import { AlertTriangle, Check, CircleDashed, Clock3, Loader2, Minus, Split, X } from 'lucide-react';
 import type { NodeStatus } from '../investigation/derive';
 
 // Nine states, five visual families. The word always says which one; colour is never alone.
@@ -7,17 +6,16 @@ const FAMILY: Record<NodeStatus, 'idle' | 'active' | 'good' | 'attention' | 'tim
   disagreement: 'attention', timeout: 'timeout', rejected: 'bad',
 };
 
-const ICON: Record<NodeStatus, typeof Check> = {
-  idle: Minus, requested: CircleDashed, processing: Loader2, responded: Check, verified: Check, complete: Check,
-  disagreement: Split, timeout: Clock3, rejected: X,
+const WORD: Record<NodeStatus, string> = {
+  idle: 'Idle', requested: 'Asked', processing: 'Working', responded: 'Answered', verified: 'Verified', complete: 'Done',
+  disagreement: 'Conflict', timeout: 'No answer', rejected: 'Rejected',
 };
 
 export function StatePill({ status }: { status: NodeStatus }) {
-  const Icon = status === 'disagreement' ? AlertTriangle : ICON[status];
   return (
     <span className="state-pill" data-family={FAMILY[status]}>
-      <Icon size={10} strokeWidth={2.6} aria-hidden />
-      {status}
+      <i aria-hidden />
+      {WORD[status]}
     </span>
   );
 }

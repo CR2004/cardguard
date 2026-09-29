@@ -26,6 +26,7 @@ export interface EvidenceItem {
   round: 1 | 2;
   status: 'attested' | 'verified' | 'rejected';
   conflict?: boolean;
+  points?: number; // risk points the policy gate gave this fact (from gate.decision contributions)
 }
 
 export interface Transfer {
@@ -154,6 +155,37 @@ export function shortLabel(key: string): string {
     country_mismatch: 'Country diff', velocity_band: 'Velocity', new_customer: 'New', model_risk_band: 'Model',
     network_velocity_band: 'Velocity', issuer_behavior: 'Behaviour', issuer_recent_declines: 'Declines',
   } as Record<string, string>)[key] ?? pretty(key);
+}
+
+/** What Stripe did with the money, from payment.settled; a void that Stripe did not confirm never reads as voided. */
+export function settlementOf(approve: boolean, status: string, reason?: string | null):
+  { word: string; note: string; tone: 'good' | 'bad' | 'attention' | 'neutral' } {
+  if (approve) {
+    if (status === 'succeeded') return { word: 'Charged', note: 'PaymentIntent succeeded', tone: 'good' };
+    // a capture error is not a decline: a capture that went through cannot be cancelled (stripe_processor.authorize)
+    if (status === 'processor_error') return { word: 'Charge unconfirmed', note: 'Stripe did not confirm the capture', tone: 'bad' };
+    return { word: 'Not charged', note: reason || pretty(status), tone: 'bad' };
+  }
+  if (status === 'voided') return { word: 'Voided', note: 'Nothing charged', tone: 'neutral' };
+  if (status === 'void_failed') return { word: 'Void pending', note: 'Hold not released yet; nothing captured', tone: 'attention' };
+  return { word: 'Void unconfirmed', note: reason ? `Stripe did not confirm the void: ${reason}` : 'Stripe did not confirm the void', tone: 'bad' };
+}
+
+/** The review and decline lines, as the gate's own score line states them ("review from 3, decline from 8"). */
+export function gateThresholds(gate: { lines: GateLine[] }): { review: number; decline: number } | null {
+  const m = gate.lines.find((l) => l.rule === 'score')?.text.match(/review from (\d+), decline from (\d+)/);
+  return m ? { review: Number(m[1]), decline: Number(m[2]) } : null;
+}
+
+/** A guard refusal in plain words ("'amount_band': card-number-like digits" -> "Amount carried card-number-like digits"). */
+export function plainReason(reason: string): string {
+  const leak = reason.match(/^'(\w+)': (.+)$/);
+  if (leak?.[1] && leak[2]) return `${factLabel(leak[1])} carried ${leak[2]}`;
+  const band = reason.match(/^value for '(\w+)' not in vocabulary$/);
+  if (band?.[1]) return `${factLabel(band[1])} was not an allowed band`;
+  const size = reason.match(/^bad value type\/size for '(\w+)'$/);
+  if (size?.[1]) return `${factLabel(size[1])} was not a short band`;
+  return reason;
 }
 
 /** Apply one event. Returns a new object; never mutates the input. */
@@ -371,6 +403,10 @@ export function applyEvent(prev: Investigation, e: TraceEvent, vocabulary: Recor
         decision: e.decision ?? 'step_up', decidedBy: e.decided_by ?? 'rules', score: e.score ?? null,
         lines: e.lines ?? [], parties: e.parties ?? [], explanation: e.explanation,
       };
+      for (const c of e.contributions ?? []) {
+        const x = s.evidence.find((it) => it.key === c.fact.split('=')[0]);
+        if (x && c.points > 0) x.points = c.points;
+      }
       node('coordinator', 'complete', 'Handed verified evidence to the policy gate');
       node('gate', 'complete', { approve: 'Approve', step_up: 'Hold for a person', decline: 'Decline' }[s.gate.decision]);
       move('coordinator', 'gate', 'verified evidence');
@@ -385,6 +421,9 @@ export function applyEvent(prev: Investigation, e: TraceEvent, vocabulary: Recor
     case 'fallback': {
       node('coordinator', 'timeout', 'No Flower verdict: decided on the store node');
       s.mode = 'in-process';
+      // the Flower verdict was not bound to this decision: it is superseded by the store node's own gate
+      s.gate = undefined;
+      for (const x of s.evidence) delete x.points;
       break;
     }
     case 'flower.run.finished':
@@ -408,10 +447,9 @@ export function applyEvent(prev: Investigation, e: TraceEvent, vocabulary: Recor
       s.payment = { processor: e.processor ?? 'stripe', approve: Boolean(e.approve), status: e.status ?? '?',
         authCode: e.auth_code, reason: e.reason };
       if (s.phase !== 'review') s.phase = 'settling';
-      node('tx', e.status === 'succeeded' || e.status === 'voided' ? 'complete' : 'rejected',
-        e.approve ? (e.status === 'succeeded' ? 'PaymentIntent succeeded' : `Not charged: ${e.reason ?? e.status}`)
-          : 'Verification voided: nothing charged');
-      move('store', 'tx', e.approve ? 'confirm PaymentIntent' : 'void');
+      const st = settlementOf(Boolean(e.approve), e.status ?? '', e.reason);
+      node('tx', e.status === 'succeeded' || e.status === 'voided' ? 'complete' : 'rejected', `${st.word}: ${st.note}`);
+      move('store', 'tx', e.approve ? 'capture PaymentIntent' : 'void');
       break;
     }
     case 'outcome': {

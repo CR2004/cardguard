@@ -1,15 +1,15 @@
 // Stage geometry (design units; the stage is scaled to fit). Left to right is cause to effect.
 import type { EdgeId, NodeId } from './derive';
 
-export const STAGE = { width: 1040, height: 760 };
+export const STAGE = { width: 930, height: 700 };
 
 export type Point = readonly [number, number];
 export type RegionId = 'bank' | 'merchant' | 'coordinator';
 
 export const REGIONS: Record<RegionId, { x: number; y: number; w: number; h: number }> = {
-  bank: { x: 128, y: 10, w: 264, h: 322 },
-  merchant: { x: 128, y: 380, w: 264, h: 370 },
-  coordinator: { x: 542, y: 10, w: 240, h: 740 },
+  bank: { x: 124, y: 10, w: 244, h: 280 },
+  merchant: { x: 124, y: 330, w: 244, h: 360 },
+  coordinator: { x: 486, y: 10, w: 236, h: 680 },
 };
 
 export const REGION_OF: Partial<Record<NodeId, RegionId>> = {
@@ -18,13 +18,13 @@ export const REGION_OF: Partial<Record<NodeId, RegionId>> = {
 
 /** Top-left of each node's box. */
 export const NODE_POS: Record<NodeId, { left: number; top: number }> = {
-  tx: { left: 0, top: 480 },
-  bank: { left: 142, top: 28 },
-  store: { left: 142, top: 396 },
-  network: { left: 550, top: 40 },
-  coordinator: { left: 550, top: 450 },
-  gate: { left: 808, top: 300 },
-  human: { left: 820, top: 30 },
+  tx: { left: 0, top: 424 },
+  bank: { left: 136, top: 26 },
+  store: { left: 136, top: 346 },
+  network: { left: 492, top: 36 },
+  coordinator: { left: 498, top: 400 },
+  gate: { left: 752, top: 262 },
+  human: { left: 750, top: 36 },
 };
 
 interface EdgeGeom {
@@ -37,15 +37,15 @@ interface EdgeGeom {
 }
 
 export const EDGES: Record<EdgeId, EdgeGeom> = {
-  'tx-store': { a: 'tx', b: 'store', from: [112, 540], to: [142, 540], label: [127, 526], crossings: { merchant: [128, 540] } },
-  'store-bank': { a: 'store', b: 'bank', from: [260, 396], to: [260, 322], label: [260, 356],
-    crossings: { merchant: [260, 380], bank: [260, 332] } },
-  'store-coordinator': { a: 'store', b: 'coordinator', from: [378, 520], to: [550, 520], label: [467, 500],
-    crossings: { merchant: [392, 520], coordinator: [542, 520] } },
-  'coordinator-network': { a: 'coordinator', b: 'network', from: [662, 450], to: [662, 214], label: [662, 330], crossings: {} },
-  'coordinator-gate': { a: 'coordinator', b: 'gate', from: [774, 510], to: [846, 414], label: [812, 500],
-    crossings: { coordinator: [782, 499] } },
-  'gate-human': { a: 'gate', b: 'human', from: [918, 300], to: [918, 160], label: [918, 230], crossings: {} },
+  'tx-store': { a: 'tx', b: 'store', from: [112, 480], to: [136, 480], label: [124, 466], crossings: { merchant: [124, 480] } },
+  'store-bank': { a: 'store', b: 'bank', from: [246, 346], to: [246, 280], label: [246, 312],
+    crossings: { merchant: [246, 330], bank: [246, 290] } },
+  'store-coordinator': { a: 'store', b: 'coordinator', from: [356, 470], to: [498, 470], label: [427, 452],
+    crossings: { merchant: [368, 470], coordinator: [486, 470] } },
+  'coordinator-network': { a: 'coordinator', b: 'network', from: [604, 400], to: [604, 214], label: [604, 310], crossings: {} },
+  'coordinator-gate': { a: 'coordinator', b: 'gate', from: [710, 450], to: [784, 390], label: [752, 425],
+    crossings: { coordinator: [722, 440] } },
+  'gate-human': { a: 'gate', b: 'human', from: [837, 262], to: [837, 176], label: [837, 219], crossings: {} },
 };
 
 /** Start and end of a message on its edge; a blocked one ends at the boundary that stopped it. */

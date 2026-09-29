@@ -36,6 +36,7 @@ function detail(e: TraceEvent): string {
   if (e.evidence) return Object.entries(e.evidence).filter(([k]) => k !== 'token').map(([k, v]) => `${pretty(k)}=${v}`).join('  ');
   if (e.lines) return `${pretty(e.decision ?? '')} · ${e.decided_by ?? ''}`;
   if (e.kind === 'coord.nodes') return `${e.nodes?.length ?? 0} node(s)`;
+  if (e.run_id) return `Flower run ${e.run_id}`;
   if (e.kind === 'payment.settled') return `${e.processor}: ${pretty(e.status ?? '')}${e.reason ? ` (${e.reason})` : ''}`;
   if (e.kind === 'outcome') return `${pretty(e.outcome ?? '')}${e.charged ? ', charged' : ', not charged'}`;
   if (e.kind === 'review.decided') return e.action ?? '';
@@ -56,9 +57,9 @@ export function TraceTimeline({ events, applied }: { events: TraceEvent[]; appli
         </button>
         <span className="timeline__last">
           {last ? <>{formatMs(last.t)} · {KIND[last.kind] ?? last.kind}{last.src ? ` · ${last.src}${last.dst ? ` → ${last.dst}` : ''}` : ''} · {detail(last)}</>
-            : 'Every step the nodes report appears here, with its real time since checkout.'}
+            : 'Technical trace: every step the nodes report, with its real time since checkout.'}
         </span>
-        <span className="faint" style={{ fontSize: 11.5 }}>{applied}/{events.length} events shown</span>
+        <span className="timeline__count">{applied} of {events.length} events</span>
       </div>
       {open && (
         <div className="timeline__body">
