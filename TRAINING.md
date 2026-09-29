@@ -114,6 +114,44 @@ Amount above / below the merchant's p90 / p10 (`high_amount`, `micro_amount`), `
 `velocity`, `new_customer`, `night`, `card_age`, `days_since_prev`: the same definitions as above. It has no
 `round_1`, `round_10`, `hour_unusual`, `has_hist`, `amt_dev`, `d3_missing` or `prior_count`.
 
+### Column names, in weight order
+
+These are the names stored under `"features"` in `fl_weights.json` and `specialist_weights.json`, in the order the
+weights use. Position 0 of every weight list is the **bias**; the features follow from position 1.
+
+**Federated fraud model** (`fl_weights.json`, 10 weights)
+
+| Position | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| Column | bias | `high_amount` | `micro_amount` | `country_mismatch` | `credit` | `velocity` | `new_customer` | `night` | `card_age` | `days_since_prev` |
+
+**Specialist models** (`specialist_weights.json`, one set per merchant)
+
+| Model | Weights | Columns by position (0 is the bias) |
+|---|---|---|
+| `transaction` | 6 | 1 `high_amount`, 2 `micro_amount`, 3 `round_1`, 4 `round_10`, 5 `velocity` |
+| `identity` | 4 | 1 `credit`, 2 `card_age`, 3 `new_customer` |
+| `geo` | 2 | 1 `country_mismatch` |
+| `behavior` | 8 | 1 `night`, 2 `hour_unusual`, 3 `has_hist`, 4 `amt_dev`, 5 `days_since_prev`, 6 `d3_missing`, 7 `prior_count` |
+| combiner (`stack`) | 9 | 1 `transaction_medium`, 2 `transaction_high`, 3 `identity_medium`, 4 `identity_high`, 5 `geo_medium`, 6 `geo_high`, 7 `behavior_medium`, 8 `behavior_high` |
+
+The combiner's inputs are named here for readability; the file stores the specialist order
+(`transaction, identity, geo, behavior`) and the weights follow it, a "medium" then a "high" input for each.
+
+**Dataset columns that feed the features** (IEEE-CIS `train_transaction.csv`)
+
+| Dataset column | What it is | Features it feeds |
+|---|---|---|
+| `TransactionDT` | seconds from a reference time | `night`, `velocity`, `hour_unusual`, and the order of a card's purchases behind `has_hist`, `amt_dev`, `prior_count`; also the time split |
+| `TransactionAmt` | the amount | `high_amount`, `micro_amount`, `round_1`, `round_10`, `amt_dev` |
+| `addr2` | billing country code | `country_mismatch` |
+| `card6` | debit or credit | `credit` |
+| `D1` | days since the card was first seen | `card_age`, `new_customer` |
+| `D3` | days since the card's previous purchase | `days_since_prev`, `d3_missing` |
+| `card1`, `card2`, `card3`, `card5`, `addr1`, `P_emaildomain` | together the card key | `velocity` and all the behavior history features |
+| `ProductCD` | product type, used as the merchant | which merchant a row belongs to, and the amount cutoffs behind `high_amount` and `micro_amount` |
+| `isFraud` | the label | not a feature: what the models learn to predict |
+
 ### The merchants and their data
 
 Each product type in the dataset acts as one merchant. "Training rows" are the first 70% of the training period, used
