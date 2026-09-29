@@ -80,3 +80,36 @@ Temporary probes stayed under `/tmp`; they did not print credentials or raw card
 ## Final Demo Recommendation
 
 For a 1–2 minute demo, restart the merchant service to load the patched launcher. Show the built-in `leak` attack first: three `BLOCKED` ledger entries and the disclosure count at zero. Then run the three-store synthetic fraud ring over `local-agent`; show `flower:local-agent`, the node-bound merchant identity, `low → medium → high`, and human review on store C. State explicitly that Jev and Endeavor were in rules/template fallback for this validation. Do not demonstrate A–D as live model successes, or claim that arbitrary gift text never reaches a model, until endpoint credentials and redacted request-boundary capture are available.
+
+## Live-key validation, new Stripe-only tree (same day, after commit 133a69a)
+
+The issuer node was removed; the merchant is Stripe-only and `run_demo.py` requires
+`sk_test_`/`pk_test_` keys, which were not available. Live checkout therefore ran in-process
+(Flask test client + faked Stripe SDK, no network) with a REAL Jev key in the environment.
+No credential was written to the repo; probes stayed under `/tmp` with redacted output.
+
+- **Live Jev** (`jev-1.13.0`): clean facts → `approve` (conf 0.89–1.0, `decided_by=rules+jev`);
+  all-high facts → `decline` (0.98), more-cautious-wins holds; `cvc_check=fail` → hard decline
+  with **zero** Jev calls. `_jev_state` drops the token; its only scanner hit is the word rule
+  on the fixed meaning gloss "security code" (static code text, no digits, no card data,
+  covered by `test_jev_only_ever_sees_vocabulary_words`).
+- **New-tree matrix 11/11**: normal approve with live Jev vote; CVC hard decline rules-only;
+  `leak` attack 3/3 BLOCKED; injection gift + `model_agent` without a direct endpoint →
+  `no_model_endpoint`, payment voided; digit-bearing gift refused pre-call (`unsafe_input`,
+  0 model HTTP calls on the live code path); fraud ring `low → medium → high` + masked alert;
+  ledger re-scan `card_numbers_seen_by_coordinator=0`, no PAN, no `pm_` ids disclosed.
+- **Grid path**: verified live on the pre-rewrite tree with identical `agentapp/` code —
+  `decided_via=flower:local-agent`, node-bound `merchant_id`, merchant-agent disclosure via
+  `/agent/facts`, live Jev vote inside the coordinator task, ledger scan 0. On the new tree,
+  end-to-end Grid checkout is blocked on Stripe test keys (`processor.verify` must succeed
+  before the Grid stage); unit Grid tests pass. Two restart hazards were found live:
+  a saved run series dies with the SuperLink (StartRun 500), and a SuperNode must rejoin a
+  restarted SuperLink (else `no_merchant_nodes`). The series case is now fixed:
+  `launch._start_run` retries once without the stale series, with a regression test.
+- **Endeavor**: attempted live through the Flower runtime (`FLWR_MODEL_API_KEY` on the
+  SuperLink) — the provider returned `502 "Flower Endeavor providers failed"`, and the
+  verdict correctly fell back to template (display-only, decision unaffected). A direct
+  Responses endpoint for the injection demo still needs redeeming the Nebius promo code:
+  `export LLM_BASE_URL=https://api.studio.nebius.com/v1 LLM_API_KEY=<nebius key> LLM_MODEL=<model>`.
+- Full suite on the final tree: **122 passed, 3 skipped** (skips: IEEE-CIS CSV absent).
+  Uncommitted diff at validation time: `launch.py` series retry + its test only.

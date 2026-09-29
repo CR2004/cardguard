@@ -72,7 +72,15 @@ def _start_run(stub, superlink: str, decision_id: str, prompt: str, app_path: st
     series = load_series(superlink)
     if series is not None:
         req.series_id = series  # same series => the coordinator's context.state carries over
-    res = stub.StartRun(req)
+    try:
+        res = stub.StartRun(req)
+    except Exception:
+        if series is None:
+            raise
+        # The saved series belongs to a previous SuperLink (it restarts forget them):
+        # retry once without it instead of failing the payment's Grid path.
+        req.ClearField("series_id")
+        res = stub.StartRun(req)
     if not res.HasField("run_id"):
         raise RuntimeError("SuperLink did not start the run")
     if res.HasField("series_id"):
