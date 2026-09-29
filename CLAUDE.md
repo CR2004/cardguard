@@ -155,16 +155,14 @@ user_prompt via StartRunRequest exactly like `flwr chat` does. The SuperLink spa
 Limits: 1,200 req/min, 64k tokens. No arithmetic, weak on dates, literal about negations.
 
 ## Status
-Done: everything in the layout table; real-data federated training (0.77 AUC, matches pooled,
-beats any lone merchant); issuer node with sealed cards, signed merchant requests, key files with
-rotation, chained audit, CVC lockout, rate limits, optional TLS; attack modes (leak, tamper,
-replay); model-driven agent demo; boundary tests; package layout; the AgentApp with both roles,
-verified live on a local SuperLink + SuperNode (100+ tests).
-Not yet run against real services: Jev, Endeavor, an LLM endpoint, SuperGrid.
-Left: (1) credentials + `flwr login supergrid`, (2) run the same FAB on SuperGrid (needs a
-SuperNode we control for the merchant role, or run the merchant role on the laptop's SuperNode
-joined to SuperGrid), (3) optional DP on FedAvg, (4) publish to Flower Hub + GitHub + backup
-video by 4pm, (5) pitch, (6) UI polish.
+Done: see README "Status for the team". Accuracy claims were corrected on Sep 29: plain FedAvg does
+NOT beat lone merchants on their own data for large verticals; FedAvg + local training never loses
+and helps small merchants (<~1,000 rows). Never say "federated beats any merchant". The ring
+detection is not validated by IEEE-CIS (69 cross-vertical sightings in 590k rows).
+Not yet run against real services: Jev, Endeavor / Flower-served models, Stripe, SuperGrid.
+Left: commit + push; `flwr login supergrid` + SuperGrid run (needs a SuperNode we control);
+FLWR_MODEL_API_KEY / TYPESAFE_API_KEY / Stripe test keys; ship personalisation at merchant startup;
+dispute draft + injection demo through a Flower task; UI pass; Hub publish; video; pitch.
 
 ## Working style
 - Small verified steps. Run tests after each change. Don't rewrite working modules wholesale.
