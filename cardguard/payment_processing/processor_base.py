@@ -1,4 +1,4 @@
-"""What every processor shares: letters-only ids, one-use scoped verifications, a chained audit."""
+"""What a processor adapter provides: letters-only ids, one-use scoped verifications, a chained audit."""
 from __future__ import annotations
 
 import hashlib
@@ -9,7 +9,7 @@ import time
 
 from cardguard.decision import audit
 from cardguard.decision.guard import HEX_TO_LETTERS, TOKEN_RE
-from cardguard.payment_processing.errors import IssuerReject
+from cardguard.payment_processing.errors import ProcessorReject
 
 VERIFICATION_TTL = 3600.0  # unused verifications are forgotten after an hour
 
@@ -57,7 +57,7 @@ class ProcessorBase:
 
     def _reject(self, event, merchant_id, reason):
         self._log(event, merchant_id, "rejected", reason=reason)
-        raise IssuerReject(reason)
+        raise ProcessorReject(reason)
 
     def verify_audit(self) -> tuple[bool, int | None]:
         return audit.verify(self.audit)

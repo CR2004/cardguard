@@ -5,7 +5,7 @@ import pytest
 
 from cardguard.decision.guard import TOKEN_RE, find_leaks
 from cardguard.payment_processing import merchant
-from cardguard.payment_processing.issuer import IssuerReject
+from cardguard.payment_processing.errors import ProcessorReject
 from cardguard.payment_processing.stripe_processor import StripeProcessor
 
 
@@ -37,36 +37,32 @@ def test_verify_returns_the_same_five_facts_as_the_issuer():
     assert TOKEN_RE.match(out["card_ref"]) and out["cvc_check"] == "pass" and out["funding"] == "credit"
     assert not any(find_leaks(str(v)) for v in out.values())
     assert p.verify("pm_abc", 2000, "m")["card_ref"] == out["card_ref"]        # stable per card
-    with pytest.raises(IssuerReject, match="payment method"):
+    with pytest.raises(ProcessorReject, match="payment method"):
         p.verify("4242424242424242", 2000, "m")                               # a card number is not accepted
 
 
 def test_authorize_once_scoped_and_bank_decline():
     p = StripeProcessor("sk_test_x", "pk_test_x", sdk=fake_sdk())
     vid = p.verify("pm_abc", 2000, "m")["verification_id"]
-    with pytest.raises(IssuerReject, match="another merchant"):
+    with pytest.raises(ProcessorReject, match="another merchant"):
         p.authorize(vid, "other")
     assert p.authorize(vid, "m") == {"status": "succeeded", "auth_code": "pi_test_abc"}
-    with pytest.raises(IssuerReject, match="already used"):
+    with pytest.raises(ProcessorReject, match="already used"):
         p.authorize(vid, "m")
     d = StripeProcessor("sk_test_x", "pk_test_x", sdk=fake_sdk(decline=True))
     vid = d.verify("pm_abc", 2000, "m")["verification_id"]
-    assert d.authorize(vid, "m")["status"] == "issuer_declined"
+    assert d.authorize(vid, "m")["status"] == "processor_declined"
     vid2 = d.verify("pm_abc", 2000, "m")["verification_id"]
     assert d.void(vid2, "m") == {"status": "voided"} and d.audit[-1]["event"] == "void"
 
 
 def test_merchant_flow_on_stripe(monkeypatch):
-    monkeypatch.setattr(merchant, "PROCESSOR", "stripe")
-    monkeypatch.setattr(merchant, "issuer", StripeProcessor("sk_test_x", "pk_test_x", sdk=fake_sdk()))
+    monkeypatch.setattr(merchant, "processor", StripeProcessor("sk_test_x", "pk_test_x", sdk=fake_sdk()))
     merchant.ledger = merchant.MerchantLedger(); merchant.pending.clear(); merchant.seen.clear(); merchant._checkout_calls.clear()
     c = merchant.app.test_client()
-    assert c.get("/config").get_json()["processor"] == "stripe"
     res = c.post("/checkout", json={"blob": "pm_abc", "amount_cents": 2000, "buyer_country": "US", "hour": 14}).get_json()
     assert res["outcome"] == "approved" and res["payment"]["status"] == "succeeded"
     led = c.get("/ledger").get_json()
     assert "pm_abc" not in str(led) and led["card_numbers_seen_by_coordinator"] == 0
-    tamper = c.post("/checkout", json={"blob": "pm_abc", "amount_cents": 2000, "buyer_country": "US", "hour": 14, "attack": "tamper"}).get_json()
-    assert tamper["outcome"] == "issuer_rejected" and "only demonstrable" in tamper["reason"]
     leak = c.post("/checkout", json={"blob": "pm_abc", "amount_cents": 2000, "buyer_country": "US", "hour": 14, "attack": "leak"}).get_json()
     assert leak["outcome"] == "blocked" and len(leak["blocked"]) == 3

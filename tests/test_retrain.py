@@ -39,8 +39,8 @@ def test_join_adds_a_node_to_the_next_round():
 
 def test_merchant_labels_from_review_and_chargeback(monkeypatch):
     from tests.test_merchant import MASTER_DE, buy
-    from cardguard.payment_processing.issuer import Issuer
-    monkeypatch.setattr(merchant, "issuer", Issuer(merchants={merchant.MERCHANT_ID: "s"}))
+    from tests.stripe_fake import processor
+    monkeypatch.setattr(merchant, "processor", processor())
     monkeypatch.setattr(merchant, "REVIEWER_TOKEN", "rev-token"); H = {"Authorization": "Bearer rev-token"}
     merchant.ledger = merchant.MerchantLedger(); merchant.pending.clear(); merchant.seen.clear()
     merchant.labels.clear(); merchant.payments.clear(); merchant.registry = None; merchant._checkout_calls.clear()

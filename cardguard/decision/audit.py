@@ -1,6 +1,6 @@
 """Hash-chained, append-only logs. Each entry carries the hash of the previous one, so removing,
 reordering or editing any entry breaks every hash after it. Used by the merchant ledger and the
-issuer audit log.
+processor audit log.
 
 With AUDIT_KEY set (hex), hashes are HMAC-SHA256 under that key, so a writer without the key
 cannot recompute a consistent chain. A capped log keeps the hash of the last dropped entry as its

@@ -1,1 +1,1 @@
-"""Issuer node (sees card data), merchant node (never does), card frame, checkout page."""
+"""Merchant node (never sees card data), the Stripe processor adapter, the checkout page."""

@@ -1,12 +1,9 @@
-"""Stripe as the processor behind the same three calls the issuer node answers.
+"""Stripe as the processor: verify / authorize / void.
 
-With Stripe, the "blob" the store receives is a Stripe payment-method id (pm_...) created by Stripe
-Elements in the browser: the card number goes from the browser to Stripe, never to us. verify()
-turns that id into the same five facts the issuer returns; authorize() confirms a TEST-mode
-PaymentIntent; void() drops the pending verification (nothing was charged yet).
-
-Test keys only: sk_live_ / pk_live_ are refused. The tamper and replay attacks of the issuer demo
-do not apply here (Stripe binds the payment method itself); the leak attack still does.
+The store receives a Stripe payment-method id (pm_...) created by Stripe Elements in the browser:
+the card number goes from the browser to Stripe, never to us. verify() turns that id into five
+non-sensitive facts; authorize() confirms a TEST-mode PaymentIntent; void() drops the pending
+verification (nothing was charged yet). Test keys only: sk_live_ / pk_live_ are refused.
 """
 from __future__ import annotations
 
@@ -17,7 +14,7 @@ from cardguard.payment_processing.processor_base import ProcessorBase
 
 
 class StripeProcessor(ProcessorBase):
-    """Same interface as issuer.Issuer: verify / authorize / void, plus an audit list."""
+    """verify / authorize / void, plus a chained audit of what Stripe answered (dispute evidence)."""
 
     def __init__(self, secret_key: str, publishable_key: str, sdk=None, clock=time.time):
         super().__init__(clock)
@@ -54,8 +51,8 @@ class StripeProcessor(ProcessorBase):
             pi = self.sdk.PaymentIntent.create(amount=v["amount"], currency="usd", payment_method=v["pm"], confirm=True,
                                                automatic_payment_methods={"enabled": True, "allow_redirects": "never"})
         except self.sdk.error.CardError as e:  # the bank said no
-            self._log("authorize", v["merchant"], "issuer_declined")
-            return {"status": "issuer_declined", "reason": getattr(e, "user_message", "card declined")}
+            self._log("authorize", v["merchant"], "processor_declined")
+            return {"status": "processor_declined", "reason": getattr(e, "user_message", "card declined")}
         except Exception as e:  # noqa: BLE001 - network/SDK failure: never a 500, never a retry that double-charges
             self._log("authorize", v["merchant"], "processor_error", reason=type(e).__name__)
             return {"status": "processor_error", "reason": type(e).__name__}
