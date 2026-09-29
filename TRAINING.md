@@ -44,6 +44,89 @@ Two models are trained and used together at every checkout.
 Logistic regression is just `score = bias + weight1 x feature1 + ...`, squashed into a 0-to-1 fraud probability. A
 model that is only a list of numbers can be averaged, and its files are tiny.
 
+## The exact features
+
+Every feature is a number between 0 and 1. Each has two forms: how it is built from the dataset when the models are
+trained, and how the merchant node builds it from a live checkout. A test checks that the history features are
+identical in both forms.
+
+**Card key.** Training has no card number, so it identifies "the same card" by the community-standard key
+`(card1, card2, card3, card5, addr1, P_emaildomain)`. Live, the node uses the card's keyed reference. Nothing here is
+a card number.
+
+**Day counts** (`card_age`, `days_since_prev`) are scaled as `min(log(1 + days) / log(1 + 365), 1)`.
+
+### Specialist 1: Transaction (5 features, 6 weights)
+
+| Feature | Meaning | Training (dataset column) | Live checkout |
+|---|---|---|---|
+| `high_amount` | amount above this merchant's 90th percentile | `TransactionAmt` vs the merchant's own p90 (training rows only) | dollars vs the merchant's p90 (its own quantiles after 200 completed charges, before that the seed cuts for its vertical) |
+| `micro_amount` | amount below this merchant's 10th percentile | same, p10 | same, p10 |
+| `round_1` | a whole-dollar amount | `TransactionAmt` has no cents | `amount_cents % 100 == 0` |
+| `round_10` | a multiple of $10 | `TransactionAmt % 10 == 0` | `amount_cents % 1000 == 0` |
+| `velocity` | purchases by this card in the previous 24 hours, `min(n, 10) / 10` | earlier rows with the same card key within 24 h of `TransactionDT` | this card's earlier purchases at this store in the last 24 h |
+
+### Specialist 2: Identity (3 features, 4 weights)
+
+| Feature | Meaning | Training | Live |
+|---|---|---|---|
+| `credit` | the card is a credit card | `card6 == credit` | funding type from Stripe is credit |
+| `card_age` | how long since this card was first seen (scaled) | `D1` | days since this store first saw the card |
+| `new_customer` | first time this merchant sees the card | `D1 == 0` | no earlier sighting at this store |
+
+### Specialist 3: Geo (1 feature, 2 weights)
+
+| Feature | Meaning | Training | Live |
+|---|---|---|---|
+| `country_mismatch` | the buyer looks to be in a different country | billing country code (`addr2`) missing or not the home country (87) | the card's issuing country differs from the buyer's country |
+
+The training and live meanings are close but not identical, which matters for this feature: see "Why the fine-tune?" below.
+
+### Specialist 4: Behavior (7 features, 8 weights)
+
+Built from this card's own earlier purchases only (never the current one or later ones).
+
+| Feature | Meaning | Training | Live |
+|---|---|---|---|
+| `night` | purchase between midnight and 6 am | hour from `TransactionDT` | buyer's hour (clock, or chosen in the demo) |
+| `hour_unusual` | the card has 3 or more earlier purchases and none within 3 hours of this hour | hour histogram per card key | the same, kept per store and card |
+| `has_hist` | the card has 2 or more earlier purchases, so a comparison is possible | count of earlier rows | the same |
+| `amt_dev` | how far this amount is from the card's usual, capped at 1 | `abs(log(1+amount) - mean of earlier log(1+amount)) / max(std, 0.25) / 4` | the same formula |
+| `days_since_prev` | days since the card's previous purchase (scaled; 0 if none) | `D3` | now minus the last purchase time |
+| `d3_missing` | there was no previous purchase | `D3` missing | no earlier purchase |
+| `prior_count` | how many earlier purchases the card has, scaled | `min(log(1+k) / log(1+cap), 1)`; `cap` is the training 99th percentile | the same, with `cap` read from `specialist_weights.json` |
+
+Dataset columns used by the specialists: `TransactionDT`, `TransactionAmt`, `addr1`, `addr2`, `D1`, `D3`, `card1`,
+`card2`, `card3`, `card5`, `ProductCD` (which merchant), `card6`, `P_emaildomain`, and `isFraud` as the label.
+
+### The combiner (8 inputs, 9 weights)
+
+For each specialist in the order Transaction, Identity, Geo, Behavior it takes two yes/no inputs: "is the band medium"
+and "is the band high". Its output becomes the final `specialist_stack_band`.
+
+**Bands.** A specialist's score is `low`, `medium` or `high` using two cutoffs: the 80th and 95th percentiles of the
+scores on the pooled stacking slice (so roughly 20% of payments are at least medium and 5% are high). One set of
+cutoffs is used for every merchant, so "high" means the same risk everywhere.
+
+### The federated fraud model (9 features, 10 weights)
+
+Amount above / below the merchant's p90 / p10 (`high_amount`, `micro_amount`), `country_mismatch`, `credit`,
+`velocity`, `new_customer`, `night`, `card_age`, `days_since_prev`: the same definitions as above. It has no
+`round_1`, `round_10`, `hour_unusual`, `has_hist`, `amt_dev`, `d3_missing` or `prior_count`.
+
+### The merchants and their data
+
+Each product type in the dataset acts as one merchant. "Training rows" are the first 70% of the training period, used
+to fit the specialists; the last 20% of the whole window is the test period.
+
+| Merchant | Training rows (specialists) | Fraud cases in the test period |
+|---|---|---|
+| W | 232,506 | 1,810 |
+| C | 38,658 | 1,617 |
+| R | 27,462 | 257 |
+| H | 26,073 | 197 |
+| S | 6,003 | 183 |
+
 ## Training the federated fraud model
 
 ```
@@ -55,6 +138,9 @@ server: average them, weighted by how many rows each merchant has   -> new globa
         v   repeat for 30 rounds
 save fl_weights.json  ->  every merchant node loads it at startup
 ```
+
+Settings: plain gradient descent with step size 1.0, 5 epochs per round, fraud rows counted 10 times as much as
+normal rows (fraud is rare), averaged by row count.
 
 ## Training the specialists
 
@@ -70,6 +156,10 @@ Same idea, with one extra step so each merchant ends up with its own version.
 4. Combiner    a small logistic model learns how to weigh the four bands
 5. Save        specialist_weights.json  ->  each merchant node loads ITS OWN vertical's weights
 ```
+
+Settings: Adam optimizer, fraud rows counted 10 times, a light L2 penalty (`1e-4`). FedAvg step size starts at
+0.05 and decays to 0.005 over the 50 rounds (the optimizer restarts every round, so the step shrinks to keep the
+weights steady). Fine-tune step size 0.01. The combiner trains 300 epochs at step size 0.1 on the stacking slice.
 
 **Why the fine-tune?** A feature can mean different things at different merchants. For example, "billing country
 mismatch" is almost always true at one merchant and rare at another, so the averaged weight can point the wrong way
@@ -87,16 +177,38 @@ measure. Cutoffs and scales come from training rows only.
 | The averaged weights back to each merchant | Card data (it never reaches a merchant either) |
 | At decision time: one banded fact per model | The four individual specialist bands (they stay on the merchant node) |
 
-## Human feedback and retraining
+## Human feedback: the model learns at once
 
-A reviewer's decision on a flagged payment becomes a label stored on that merchant's node: its 9 features plus
-fraud / not fraud. Clicking **Retrain** runs a short federated round over all registered nodes, with each human label
-counting as much as 50 ordinary rows, and then a short fine-tune on that merchant's own labels.
+Every human decision on a flagged payment (approve, decline, or a later chargeback) teaches the federated fraud
+model **immediately**, inside the same request.
 
-- The labels are saved to `.demo/labels.jsonl` and survive a restart.
-- The retrained weights are kept **in memory only**, so a restart returns to `fl_weights.json`.
-- Human labels do not retrain the specialists yet. Each label already stores its decision id, so that is a small
-  next step.
+```
+reviewer approves / declines  ->  label saved (the payment's 9 features + fraud or not fraud)
+                              ->  the node recomputes its weights right away:
+                                    start from the last federated weights
+                                    train 30 short steps on: a sample of the node's own ordinary rows
+                                                             + ALL its human labels
+                              ->  the very next checkout is scored with the new weights
+                              ->  the reply tells the reviewer this payment's model band before and after
+```
+
+- **One decision counts as 10% of the sample of ordinary rows.** So one label nudges the model, and a pattern
+  reviewed a few times moves it further.
+- **The ordinary rows keep the rest steady.** Training on the labels alone was tried and rejected: one "decline"
+  pushed 99% of all payments into the high-risk band. With the ordinary rows mixed in, on real data from merchant W:
+  training on the sample alone changes the band of 1.7% of payments; approving a high-risk payment moves that payment
+  from 0.58 to 0.30 (about 7% of others change band); declining a low-risk-looking payment moves it from 0.10 to 0.32
+  (about 21% of others change band, because that pattern is common).
+- **Recomputed, never stacked.** The weights are always recalculated from the same starting point plus all saved
+  labels. So they cannot compound, the order the labels arrived in does not matter, and no weight can move more than
+  3.0 from the federated weights however many labels arrive.
+- **It survives a restart.** The labels are saved to `.demo/labels.jsonl`; at startup the node applies them again.
+- **It never blocks a decision.** If learning fails, the human's decision still goes through with the last good weights.
+- **Clicking Retrain** still runs a short federated round over all registered nodes; the result becomes the new
+  starting point, and this node's labels are then applied the same way.
+- **Settings:** `INSTANT_LEARNING=0` turns it off; `INSTANT_LABEL_SHARE` (default `0.10`) is how much one decision counts.
+- **Not covered yet:** the specialist models do not learn from labels. That needs their 16 features stored with each
+  label and a sample of ordinary rows for them; each label already stores its decision id for this.
 
 ## Does the federation help?
 

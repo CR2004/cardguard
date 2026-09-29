@@ -28,6 +28,7 @@ import numpy as np
 
 from cardguard.payment_processing import agent_llm
 from cardguard.training import fl
+from cardguard.training import retrain as rt
 from cardguard.data import ieee_cis as fl_data
 from cardguard.decision.coordinator import TRAVEL_PURPOSE, decide, hold_unanswered, needs_travel_check
 from cardguard.decision.explain import explain
@@ -398,9 +399,45 @@ def _prune_state(now: float, max_payments: int = 500) -> None:
     del retrain_log[:-100]
 
 
-def add_label(features, label: int, source: str, reason, decision_id, now: float) -> None:
+# Instant learning: every human decision immediately updates this node's fraud-model weights. The update is a
+# pure function of (the last federated weights, a replay sample of this node's own rows, all human labels), so
+# it never compounds, does not depend on label order, and is recomputed the same way after a restart.
+INSTANT_LEARNING = os.environ.get("INSTANT_LEARNING", "1") != "0"
+INSTANT_LABEL_SHARE = float(os.environ.get("INSTANT_LABEL_SHARE", rt.INSTANT_LABEL_SHARE))
+GLOBAL_WEIGHTS = BASE_WEIGHTS.copy()   # the last federated weights (the shipped file, or the last Retrain round)
+_replay_cache = None
+
+
+def _replay():
+    """A fixed sample of this node's own ordinary rows (real vertical slice, or synthetic without the dataset)."""
+    global _replay_cache
+    if _replay_cache is None:
+        reg = _registry()
+        _replay_cache = rt.replay_sample(*reg.rows(VERTICAL if VERTICAL in reg.sources() else fl.MERCHANTS[0]))
+    return _replay_cache
+
+
+def learn_from_labels() -> None:
+    global FL_WEIGHTS
+    Xr, yr = _replay()
+    FL_WEIGHTS = rt.instant_update(GLOBAL_WEIGHTS, Xr, yr, labels, label_share=INSTANT_LABEL_SHARE)
+
+
+def add_label(features, label: int, source: str, reason, decision_id, now: float) -> dict:
+    """Store a human label and learn from it now. Returns what changed for this payment (bands only); a failure
+    to learn never fails the decision it follows."""
     labels.append((features, label))
     label_store.append(features, label, source, reason, decision_id, now)
+    if not INSTANT_LEARNING:
+        return {"learning": "off", "labels": len(labels)}
+    try:
+        x = np.array([features], dtype=float)
+        before = fl.risk_band(float(fl.predict_proba(FL_WEIGHTS, x)[0]))
+        learn_from_labels()
+        return {"learning": "instant", "labels": len(labels), "model_band_before": before,
+                "model_band_after": fl.risk_band(float(fl.predict_proba(FL_WEIGHTS, x)[0]))}
+    except Exception as e:  # noqa: BLE001 - the model is never allowed to block a human decision
+        return {"learning": "failed", "error": type(e).__name__, "labels": len(labels)}
 
 
 def settle(vid: str, amount_cents: int, approve: bool) -> dict:
@@ -768,7 +805,7 @@ def review(rid, action):
     pending.pop(rid)
     trace = traces.get(item.get("trace_id") or "")
     _step(trace, "review.decided", src="human", dst="store", action=action, review_id=rid)
-    add_label(item["features"], 0 if action == "approve" else 1, "review", op["reason"], item.get("decision_id"), now)  # the human just taught the model
+    learned = add_label(item["features"], 0 if action == "approve" else 1, "review", op["reason"], item.get("decision_id"), now)  # the human just taught the model
     review_audit.record(review_store.opinion_entry(rid, item, action, "approved" if action == "approve" else "declined",
                                                    op, now, first_reviewer))
     if action == "approve":
@@ -779,12 +816,13 @@ def review(rid, action):
                                               "facts": item["facts"], "t": time.time(), "disputed": False,
                                               "decision_id": item.get("decision_id")}
         _step(trace, "outcome", outcome="approved_by_human", charged=payment.get("status") == "succeeded")
-        return jsonify({"outcome": "approved_by_human", "payment": payment, "labels": len(labels), "trace_id": item.get("trace_id")})
+        return jsonify({"outcome": "approved_by_human", "payment": payment, "labels": len(labels), "learned": learned,
+                        "trace_id": item.get("trace_id")})
     payment = settle(item["vid"], item["amount"], False)
     _settled(trace, payment, approve=False)
     _step(trace, "outcome", outcome="declined_by_human", charged=False)
     return jsonify({"outcome": "declined_by_human", "payment": payment,
-                    "charged": False, "labels": len(labels), "trace_id": item.get("trace_id")})
+                    "charged": False, "labels": len(labels), "learned": learned, "trace_id": item.get("trace_id")})
 
 
 @app.get("/payments")
@@ -802,8 +840,8 @@ def dispute(auth_code):
     if p is None or p["disputed"]:
         return jsonify({"error": "unknown or already disputed payment"}), 404
     p["disputed"] = True
-    add_label(p["features"], 1, "chargeback", None, p.get("decision_id"), time.time())
-    return jsonify({"disputed": auth_code, "labels": len(labels)})
+    learned = add_label(p["features"], 1, "chargeback", None, p.get("decision_id"), time.time())
+    return jsonify({"disputed": auth_code, "labels": len(labels), "learned": learned})
 
 
 @app.get("/payments/<auth_code>/evidence")
@@ -856,18 +894,21 @@ def agent_join():
 @app.post("/agent/retrain")
 def agent_retrain():
     """A federated round across every registered node plus local personalisation on human labels."""
-    global FL_WEIGHTS
+    global FL_WEIGHTS, GLOBAL_WEIGHTS
     if not local_only():
         return jsonify({"error": "local only"}), 403
     if (denied := reviewer_only()) is not None:
         return denied
-    from cardguard.training import retrain as rt
     reg = _registry()
     my_node = f"node-{VERTICAL}"
     if my_node not in reg.nodes:  # synthetic registry: this node still takes part, with its nearest data source
         reg.join(my_node, VERTICAL if VERTICAL in reg.sources() else fl.MERCHANTS[0])
     out = rt.retrain(reg, my_node, labels, BASE_WEIGHTS)
+    GLOBAL_WEIGHTS = out["global_weights"]  # the lesson spread across the network becomes the new starting point
     FL_WEIGHTS = out["weights"]
+    if INSTANT_LEARNING:  # then this node's own labels are applied the gentle, replay-anchored way
+        learn_from_labels()
+        out["after"] = [fl.risk_band(float(fl.predict_proba(FL_WEIGHTS, np.array([f]))[0])) for f, _ in labels]
     entry = {"t": time.time(), "nodes": out["nodes"], "labels": out["labels"], "before": out["before"], "after": out["after"]}
     retrain_log.append(entry)
     return jsonify(entry)
@@ -885,6 +926,13 @@ def get_ledger():
     shown = [{**e, "fields": public_fields(e["fields"])} if "fields" in e else e for e in ledger.entries[-50:]]
     return jsonify({"entries": shown, "chain_ok": ok, "chain_head": audit.head(ledger.entries),
                     "card_numbers_seen_by_coordinator": ledger.card_numbers_seen_by_coordinator()})
+
+
+if INSTANT_LEARNING and labels:  # a restart keeps what the reviewers taught: the saved labels are the source of truth
+    try:
+        learn_from_labels()
+    except Exception as e:  # noqa: BLE001 - start with the shipped weights rather than not at all
+        print(f"could not re-apply {len(labels)} saved labels ({type(e).__name__}); using the shipped weights")
 
 
 if __name__ == "__main__":
