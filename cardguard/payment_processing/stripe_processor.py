@@ -39,10 +39,22 @@ class StripeProcessor(ProcessorBase):
         if not str(pm_id).startswith("pm_"):
             return self._reject("verify", merchant_id, "not a Stripe payment method id")
         try:
+            # Stripe runs the CVC/address checks when a method is attached to a customer (or confirmed);
+            # before that the result reads "unchecked". Attaching also lets the same method be charged
+            # later, so each verification gets a throwaway customer in test mode.
+            customer = self.sdk.Customer.create(description="cardguard verification")
+            self.sdk.PaymentMethod.attach(pm_id, customer=customer.id)
             card = self.sdk.PaymentMethod.retrieve(pm_id).card
+            checks = getattr(card, "checks", None)
+            if getattr(checks, "cvc_check", None) in (None, "unchecked"):
+                self.sdk.SetupIntent.create(customer=customer.id, payment_method=pm_id, confirm=True,
+                                            payment_method_types=["card"])
+                card = self.sdk.PaymentMethod.retrieve(pm_id).card
+        except self.sdk.error.CardError:  # the issuing bank refused the card at verification
+            return self._reject("verify", merchant_id, "declined by the issuing bank")
         except Exception as e:  # noqa: BLE001 - any SDK/network failure is a refusal, never card data
             return self._reject("verify", merchant_id, f"stripe: {type(e).__name__}")
-        vid = self._new_verification(merchant_id, amount_cents, pm=pm_id)
+        vid = self._new_verification(merchant_id, amount_cents, pm=pm_id, customer=customer.id)
         checks = getattr(card, "checks", None)
         cvc = getattr(checks, "cvc_check", None) if checks else None
         self._log("verify", merchant_id, "ok", cvc_check=cvc or "unavailable")
@@ -52,8 +64,8 @@ class StripeProcessor(ProcessorBase):
     def authorize(self, vid: str, merchant_id: str | None = None) -> dict:
         v = self._take(vid, merchant_id, "authorize")
         try:
-            pi = self.sdk.PaymentIntent.create(amount=v["amount"], currency="usd", payment_method=v["pm"], confirm=True,
-                                               automatic_payment_methods={"enabled": True, "allow_redirects": "never"})
+            pi = self.sdk.PaymentIntent.create(amount=v["amount"], currency="usd", payment_method=v["pm"], customer=v["customer"],
+                                               confirm=True, automatic_payment_methods={"enabled": True, "allow_redirects": "never"})
         except self.sdk.error.CardError as e:  # the bank said no
             self._log("authorize", v["merchant"], "processor_declined")
             return {"status": "processor_declined", "reason": getattr(e, "user_message", "card declined")}
