@@ -52,7 +52,7 @@ Say: "Stores share a pseudonym and a band, nothing else. Each store here is one 
 each is its own SuperNode, and that mode is in the repo."
 
 ## 7. The human, and the model learning at once (30 s)
-On the held ring payment: enter the reviewer credential once, pick a reason, decline. The reply shows the payment's model band
+On the held ring payment: enter the reviewer credential once (this browser remembers it), then decline. The reply shows the payment's model band
 before and after: the node retrained from the federated weights plus its own rows plus this label, inside the request.
 The label is on disk; "Retrain" in Node records runs a federated round across registered nodes. A chargeback becomes a label
 too, and the dispute agent drafts the response for a person.
