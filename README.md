@@ -422,7 +422,7 @@ persisted and fed back as a training label. Card data never appears in any of it
 ## Environment (.env, see .env.example)
 
 `STRIPE_SECRET_KEY`, `STRIPE_PUBLISHABLE_KEY` (test keys, required) · `FLWR_MODEL_API_KEY` (live
-explanations through Flower; model `Flwrlabs/endeavor-v1.0`) · `TYPESAFE_API_KEY` (Jev) ·
+explanations through Flower; model `flwrlabs/endeavor-1.0`) · `TYPESAFE_API_KEY` (Jev) ·
 `LLM_BASE_URL/LLM_API_KEY/LLM_MODEL` (direct calls for the injection demo and dispute drafts) ·
 `MERCHANT_VERTICAL` · `STORES` · `FL_DP_NOISE`, `FL_DP_CLIP`, `FL_ROBUST` · `DEMO_CONTROLS` (set by
 run_demo: page may choose country, hour, attack, agent mode; unset = production behaviour) ·

@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import os
 
-DEFAULT_MODEL = "Flwrlabs/endeavor-v1.0"  # Flower Endeavor, as served through the Flower runtime; override with ENDEAVOR_MODEL / LLM_MODEL
+RETRIES = 1  # extra attempts on a 5xx before the template answers
+DEFAULT_MODEL = "flwrlabs/endeavor-1.0"  # Flower Endeavor, as served through the Flower runtime; override with ENDEAVOR_MODEL / LLM_MODEL
 
 
 PAIRS = (("LLM_BASE_URL", "LLM_API_KEY"), ("FLWR_RUNTIME_BASE_URL", "FLWR_RUNTIME_API_KEY"),
@@ -45,12 +46,18 @@ def ask(instructions: str, input_text: str, fallback: str, client=None, timeout:
     client = client if client is not None else globals()["client"](timeout=timeout)
     if client is None:
         return {"text": fallback, "by": "template"}
-    try:
-        resp = client.responses.create(model=model_name(), instructions=instructions, input=input_text,
-                                       max_output_tokens=max_output_tokens)
-        text = " ".join(resp.output_text.split())[:max_chars]
-    except Exception as e:  # noqa: BLE001 - a model that is down never blocks anything
-        return {"text": fallback, "by": "template", "error": type(e).__name__}
+    text, error = "", None
+    for attempt in range(RETRIES + 1):
+        try:
+            resp = client.responses.create(model=model_name(), instructions=instructions, input=input_text,
+                                           max_output_tokens=max_output_tokens)
+            text = " ".join(resp.output_text.split())[:max_chars]
+            break
+        except Exception as e:  # noqa: BLE001 - a model that is down never blocks anything
+            error = type(e).__name__
+            # Flower's Endeavor provider answers 502 intermittently (seen live Sep 29): one more try, then the template.
+            if attempt == RETRIES or getattr(e, "status_code", 0) < 500:
+                return {"text": fallback, "by": "template", "error": error}
     if not text or find_leaks(text, cvv_words=False):
         return {"text": fallback, "by": "template", "error": "rejected_output"}
     return {"text": text, "by": model_name()}

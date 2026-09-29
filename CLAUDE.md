@@ -109,7 +109,7 @@ user_prompt via StartRunRequest exactly like `flwr chat` does. The SuperLink spa
 - TYPESAFE_API_KEY (Jev), optional JEV_MODEL to pin a version
 - Endeavor: FLWR_RUNTIME_BASE_URL / FLWR_RUNTIME_API_KEY are injected inside an AgentApp;
   elsewhere ENDEAVOR_BASE_URL / ENDEAVOR_API_KEY. ENDEAVOR_MODEL defaults to
-  `Flwrlabs/endeavor-v1.0` (confirmed Sep 29: the model to call with the Flower API key).
+  `flwrlabs/endeavor-1.0` (verified Sep 29 against api.flower.ai/v1/models; the old `Flwrlabs/endeavor-v1.0` is not served).
 - STORES=store-a,store-b,store-c: one merchant node fronting several stores (fraud-ring demo).
 - FL_DP_NOISE / FL_DP_CLIP: differential privacy on flower_app training (0 = off).
 - REVIEWER_TOKEN: credential for human actions on the merchant node (review, chargeback, evidence,
@@ -126,7 +126,7 @@ user_prompt via StartRunRequest exactly like `flwr chat` does. The SuperLink spa
   them; the bank process never receives the Stripe keys or the reviewer token.
 - .env at the repo root is loaded by run_demo.py and scripts/run_super*.py (cardguard/dotenv.py); .env.example lists everything.
 - LLM_BASE_URL / LLM_API_KEY / LLM_MODEL only for the live injection demo.
-- Flower-served models: FLWR_MODEL_API_KEY (flower.ai Profile -> Settings -> API Keys); model `Flwrlabs/endeavor-v1.0`.
+- Flower-served models: FLWR_MODEL_API_KEY (flower.ai Profile -> Settings -> API Keys); model `flwrlabs/endeavor-1.0`.
 
 ## Flower facts (verified against flwr 1.39.0 locally; see the installed source, not memory)
 - Training: `from flwr.app import ArrayRecord, Context, Message, MetricRecord, RecordDict`,
