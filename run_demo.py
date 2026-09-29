@@ -22,7 +22,6 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 from cardguard import dotenv as _dotenv  # noqa: E402
 
-_dotenv.load()
 BANK_URL = "http://127.0.0.1:4243"
 MIN_REVIEWER_TOKEN = 8
 
@@ -39,6 +38,7 @@ def reviewer_token(environ=os.environ) -> tuple[str, bool]:
 
 
 def main() -> int:
+    _dotenv.load()  # here, not at import: tests import this module and must never see the real .env
     if "--federation" in sys.argv:
         os.environ["CARDGUARD_FEDERATION"] = sys.argv[sys.argv.index("--federation") + 1]
     if "--stores" in sys.argv:

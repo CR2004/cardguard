@@ -18,3 +18,10 @@ def test_unset_reviewer_token_is_minted_fresh():
     a, preset_a = run_demo.reviewer_token({})
     b, _ = run_demo.reviewer_token({"REVIEWER_TOKEN": "   "})
     assert not preset_a and len(a) == 16 and a != b and a.isalnum()
+
+
+def test_importing_run_demo_does_not_load_the_dotenv_file():
+    """The suite must stay offline: run_demo loads .env only inside main(), never on import."""
+    import inspect
+    src = inspect.getsource(run_demo)
+    assert src.count("_dotenv.load()") == 1 and "_dotenv.load()" in inspect.getsource(run_demo.main)
