@@ -111,7 +111,7 @@ def report(res: dict) -> str:
 
 def _save(fam: dict) -> None:
     z = {"y": fam["y"], "vert": fam["vert"], "is_test": fam["is_test"], "dt": fam["dt"],
-         "vert_names": np.array(fam["vert_names"])}
+         "vert_names": np.array(fam["vert_names"]), "cap_prior_count": np.array(fam["caps"]["prior_count"])}
     for n, f in fam["families"].items():
         z[f"X_{n}"], z[f"cov_{n}"], z[f"names_{n}"] = f["X"], f["covered"], np.array(f["names"])
     np.savez_compressed(sdata.CACHE, **z)
@@ -122,7 +122,8 @@ def _load() -> dict:
     fams = {n: {"X": z[f"X_{n}"], "covered": z[f"cov_{n}"], "names": [str(s) for s in z[f"names_{n}"]]}
             for n in FAMILIES}
     return {"families": fams, "y": z["y"], "vert": z["vert"], "is_test": z["is_test"], "dt": z["dt"],
-            "vert_names": [str(s) for s in z["vert_names"]]}
+            "vert_names": [str(s) for s in z["vert_names"]],
+            "caps": {"prior_count": float(z["cap_prior_count"])} if "cap_prior_count" in z.files else {}}
 
 
 def main() -> None:

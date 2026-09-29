@@ -25,6 +25,7 @@ WIRE_SCHEMA: dict[str, set[str]] = {
     "new_customer": {"yes", "no"},
     "model_risk_band": {"low", "medium", "high"},
     "network_velocity_band": {"low", "medium", "high"},  # set by the coordinator: same card at 1 / 2 / 3+ merchants in 10 min
+    "specialist_stack_band": {"low", "medium", "high"},  # four one-signal-family models (FedAvg across merchants), stacked
 }
 TOKEN_RE = re.compile(r"^tok_[a-p]{16}$")  # letters only: can never resemble a card number
 HEX_TO_LETTERS = str.maketrans("0123456789abcdef", "abcdefghijklmnop")  # for every letters-only id we mint

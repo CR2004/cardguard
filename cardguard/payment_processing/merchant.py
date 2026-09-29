@@ -35,6 +35,7 @@ from cardguard.decision import audit
 from cardguard.decision import network as net
 from cardguard.decision.guard import Ledger, WireViolation, strip_for_wire
 from cardguard.httpjson import HttpFailure, post_json
+from cardguard.specialists import live as spec_live
 from cardguard.payment_processing.errors import IssuerReject
 
 MERCHANT_ID = os.environ.get("MERCHANT_ID", "cardguard-store")
@@ -212,6 +213,10 @@ class AmountBaseline:
 
 
 baseline = AmountBaseline(SEED_CUTS[VERTICAL])
+# Four one-signal-family models (cardguard.specialists): None without specialist_weights.json, and the node
+# then decides exactly as before. Only their stacked band crosses the wire; the four bands stay in the audit note.
+SPECIALISTS = spec_live.load(VERTICAL)
+card_history = spec_live.CardHistory()
 
 app = Flask(__name__, static_folder=None)
 app.config["MAX_CONTENT_LENGTH"] = 64 * 1024  # a checkout body is well under 8 KB
@@ -434,7 +439,8 @@ def checkout():
     seen[key] = hits + [now]
     first_time = key not in card_first_seen  # same meaning as the training feature: first sighting of this card
     card_age_days = (now - card_first_seen.setdefault(key, now)) / 86400
-    days_since_prev = (now - card_last_seen[key]) / 86400 if key in card_last_seen else 0.0
+    had_prev = key in card_last_seen
+    days_since_prev = (now - card_last_seen[key]) / 86400 if had_prev else 0.0
     card_last_seen[key] = now
     _prune_state(now)
 
@@ -457,6 +463,16 @@ def checkout():
                           fl_data.days_feature(card_age_days), fl_data.days_feature(days_since_prev)]],
                         dtype=float)  # same order as fl.FEATURES
     payload["model_risk_band"] = fl.risk_band(float(fl.predict_proba(FL_WEIGHTS, features)[0]))
+    hist = card_history.features(key, dollars, hour)  # prior purchases only; recorded below
+    if SPECIALISTS is not None:
+        scored = SPECIALISTS.score(spec_live.build_features(
+            amount_cents=amount, cuts=(p10, p50, p90), recent_purchases=len(hits), first_time=first_time,
+            card_age_days=card_age_days, days_since_prev=days_since_prev, had_prev=had_prev, hour=hour,
+            funding=card["funding"], country_mismatch=payload["country_mismatch"] == "yes", hist=hist,
+            prior_cap=SPECIALISTS.prior_cap))
+        payload["specialist_stack_band"] = scored["stack_band"]
+        note.update({f"specialist_{k}": v for k, v in scored["bands"].items()})
+    card_history.record(key, dollars, hour)
 
     agent_info = None
     if body.get("model_agent"):

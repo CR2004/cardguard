@@ -145,6 +145,8 @@ def build_families(raw: dict) -> dict:
     def cnt(name):  # distinct-entity counts, log-scaled by their own training 99th percentile
         return _log_scale(h[name], _cap(h[name], train))
 
+    prior_cap = _cap(h["prior_count"], train)  # the live node needs this to scale prior_count the same way
+
     d1, d3 = raw["D1"], raw["D3"]
     a1 = np.nan_to_num(raw["addr1"], nan=-1).astype(np.int64)
     pe, re_ = raw["pemail"], raw["remail"]
@@ -195,7 +197,7 @@ def build_families(raw: dict) -> dict:
     add("behavior", [("night", ((dt // 3600) % 24) < 6), ("hour_unusual", h["hour_unusual"]),
                      ("has_hist", h["has_hist"]), ("amt_dev", h["amt_dev"]),
                      ("new_product", h["new_product"]), ("days_since_prev", days_feature(d3)),
-                     ("d3_missing", np.isnan(d3)), ("prior_count", cnt("prior_count")),
+                     ("d3_missing", np.isnan(d3)), ("prior_count", _log_scale(h["prior_count"], prior_cap)),
                      *[(f"D{k}", days_feature(raw["D"][:, j])) for j, k in enumerate(D_EXTRA_NUMS)],
                      *[(f"D{k}_missing", np.isnan(raw["D"][:, j])) for j, k in enumerate(D_EXTRA_NUMS)]])
 
@@ -206,20 +208,21 @@ def build_families(raw: dict) -> dict:
                                           "cards_per_email", "cards_per_remail")])
 
     return {"families": fams, "y": raw["y"], "vert": raw["prod"], "vert_names": voc["prod"],
-            "is_test": is_test, "dt": dt}
+            "is_test": is_test, "dt": dt, "caps": {"prior_count": prior_cap}}
 
 
-# Features a live merchant node could compute at checkout from what it already holds (its own
-# per-card history, the amount, the buyer country, the clock, its own vertical). Everything else in
-# the full set depends on columns Vesta engineered for the dataset (C, D, M, email, addr/dist, device
-# recognition) that this checkout does not collect. An entry ending in "=" matches by prefix.
+# Features the live merchant node computes at checkout (specialists/live.py mirrors each one) from what it
+# already holds: the amount in integer cents, its own per-card history, the buyer country, the clock.
+# Everything else in the full set depends on columns Vesta engineered for the dataset (C, D, M, email,
+# addr/dist, device recognition) that this checkout does not collect. Left out on purpose because they
+# could never vary live: `subcent` (amounts arrive as integer cents), `new_product` and the merchant family
+# (a node sells under one ProductCD). An entry ending in "=" matches by prefix.
 DEPLOYABLE = {
-    "transaction": ["high_amount", "micro_amount", "round_1", "round_10", "subcent", "velocity"],
+    "transaction": ["high_amount", "micro_amount", "round_1", "round_10", "velocity"],
     "identity": ["credit", "card_age", "new_customer"],
     "geo": ["country_mismatch"],
-    "behavior": ["night", "hour_unusual", "has_hist", "amt_dev", "new_product", "days_since_prev",
-                 "d3_missing", "prior_count"],
-    "merchant": ["product="],
+    "behavior": ["night", "hour_unusual", "has_hist", "amt_dev", "days_since_prev", "d3_missing",
+                 "prior_count"],
 }
 
 
