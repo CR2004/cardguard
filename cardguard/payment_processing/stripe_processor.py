@@ -29,6 +29,10 @@ class StripeProcessor(ProcessorBase):
         self._ref_key = secrets.token_bytes(32)  # card references are stable per process
 
     def card_ref(self, fingerprint: str) -> str:
+        """The only card identity that leaves this adapter: a letters-only keyed hash of Stripe's card
+        fingerprint. The merchant's wire token and the bank attestation node's pseudonym for the card.
+        A demo correlation over Stripe TEST data, not an issuer-network identity protocol; the raw
+        fingerprint is never returned, logged or sent anywhere."""
         return self._card_ref(self._ref_key, fingerprint)
 
     def verify(self, pm_id: str, amount_cents: int, merchant_id: str) -> dict:

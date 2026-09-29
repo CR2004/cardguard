@@ -15,3 +15,8 @@ kaggle.json
 .demo/
 *.fab
 .ruff_cache/
+
+# web UI build output and dependencies (pnpm --dir web build)
+web/node_modules/
+web/dist/
+.playwright-mcp/

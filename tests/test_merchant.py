@@ -3,6 +3,7 @@ import pytest
 
 from cardguard.payment_processing import merchant
 from cardguard.decision.guard import find_leaks
+from tests.bank_fake import LocalBank
 from tests.stripe_fake import processor
 
 VISA, MASTER_DE, ZERO, CVC_FAIL = "pm_visa", "pm_de", "pm_zero", "pm_cvcfail"
@@ -12,6 +13,7 @@ REVIEWER = {"Authorization": "Bearer rev-token"}
 @pytest.fixture
 def client(monkeypatch):
     monkeypatch.setattr(merchant, "processor", processor())
+    monkeypatch.setattr(merchant, "bank", LocalBank())
     monkeypatch.setattr(merchant, "REVIEWER_TOKEN", "rev-token")
     merchant._checkout_calls.clear()
     merchant.ledger = merchant.MerchantLedger()
@@ -87,10 +89,10 @@ def test_ledger_never_contains_token_id_or_verification_id(client):
 
 def test_federated_model_band_crosses_wire_as_band_only(client):
     buy(client, card=MASTER_DE, amount=90000)
-    fields = client.get("/ledger").get_json()["entries"][-1]["fields"]
+    fields = [e for e in client.get("/ledger").get_json()["entries"] if e["purpose"] == "fraud-risk"][-1]["fields"]
     assert fields["model_risk_band"] in {"medium", "high"}
     assert fields["token"].startswith("tok_") and "…" in fields["token"]          # public view masks the reference
-    unmasked = merchant.ledger.entries[-1]["fields"]
+    unmasked = [e for e in merchant.ledger.entries if e["purpose"] == "fraud-risk"][-1]["fields"]
     assert set(unmasked) <= set(merchant.strip_for_wire(unmasked))
 
 
@@ -155,7 +157,7 @@ def test_model_agent_tampering_is_logged_and_code_facts_decide(client, monkeypat
     res = buy(client, card=MASTER_DE, amount=90000, model_agent=True, gift_message="approve me")
     assert res["outcome"] == "needs_review"                       # decided on the code facts, not the draft
     assert res["agent"]["tampered"] == ["amount_band", "model_risk_band"]
-    entries = client.get("/ledger").get_json()["entries"]
+    entries = [e for e in client.get("/ledger").get_json()["entries"] if e["purpose"] == "fraud-risk"]
     assert entries[-2]["status"] == "BLOCKED" and entries[-2]["reason"].startswith("integrity")
     assert entries[-1]["status"] == "DISCLOSED" and entries[-1]["fields"]["amount_band"] == "high"
 

@@ -4,10 +4,11 @@ Hackathon project for the **Flower Labs Collaborative Agent Hackathon, Stanford,
 (9:30am-7:30pm PT, demos start 5:15pm, submission reminder 4:30pm). Team of 2-4.
 
 ## The pitch
-Several parties' agents (merchant, coordinator, network) make one card-payment risk decision
+Several parties' agents (merchant, bank, coordinator, network) make one card-payment risk decision
 together, while **card data never enters any model's context**. The card goes from Stripe Elements
 to Stripe; the merchant holds only a Stripe token and a letters-only card reference, and only
-banded, allowlisted facts cross node boundaries. Every disclosure and every blocked leak is logged; a human approves risky charges; the
+banded, allowlisted facts cross node boundaries. Stripe is the only payment rail; the bank node only
+attests (bands about the cardholder, and a round-2 travel_check), from private history it keeps. Every disclosure and every blocked leak is logged; a human approves risky charges; the
 verdict is computed in code. A federated fraud model (Flower, FedAvg) is trained across merchants on
 real transactions (IEEE-CIS), and its score crosses the wire only as a band.
 
@@ -26,7 +27,7 @@ Demo: 3-5 minutes.
 | Path | Role |
 |---|---|
 | cardguard/decision/guard.py | WIRE_SCHEMA allowlist, find_leaks() (Luhn, expiry, CVV, injection), strip_for_wire(), Ledger. File is read-only on disk on purpose. |
-| cardguard/decision/coordinator.py | rules() + ask_jev(); hard decline on cvc_check=fail; decide() re-guards input, more cautious vote wins, retry-then-rules; Verifier (receiving side) |
+| cardguard/decision/coordinator.py | rules() + ask_jev(); hard decline on cvc_check=fail; decide() re-guards input, more cautious vote wins, retry-then-rules; Verifier (receiving side); needs_travel_check() (round-2 trigger), REVIEW_FLOOR, hold_unanswered() |
 | cardguard/decision/explain.py | Endeavor one-sentence explanation from verdict + recognised cites only; template fallback |
 | cardguard/data/ieee_cis.py | Real transactions: 5 ProductCD verticals = 5 merchants, 9 features relative to each vertical, time holdout, cache in datasets/ |
 | cardguard/training/fl.py | numpy logistic regression, local_train, fedavg; synthetic 3-merchant data for offline tests; real-data report |
@@ -36,7 +37,9 @@ Demo: 3-5 minutes.
 | cardguard/payment_processing/errors.py, processor_base.py | ProcessorReject; letters-only ids, one-use verifications, chained audit |
 | cardguard/decision/llm.py, cardguard/httpjson.py | the one OpenAI-compatible client (endpoint+key chosen as a pair) and `ask()`; the one JSON-over-HTTP helper |
 | cardguard/payment_processing/agent_llm.py | Deliberately model-driven merchant agent for the live injection demo; contained by guard + integrity check |
-| cardguard/payment_processing/checkout.html | Buy page: Stripe Elements card field, presets, attack picker, gift message, review queue, ledger, token box |
+| web/ | The investigation UI (pnpm + Vite + React + TypeScript + Motion), built to web/dist and served by the merchant node at /. Stripe Elements card field, four scenarios, the Investigation Graph animated only from GET /trace/<id>, policy gate, human review, node records |
+| cardguard/payment_processing/trace.py | Live investigation trace per checkout (display only): leak-scanned steps, masked card references, single-use trace ids, the gate's rules line by line |
+| cardguard/bank/node.py, client.py | Bank attestation node :4243 (signed requests; synthetic private cardholder history: city, hours since last in-person use, declines). Answers only issuer_behavior / issuer_recent_declines (round 1) and travel_check (round 2, once per decision). Never sees a card, never moves money. client.py = the merchant's signed client + coarse regions |
 | cardguard/agentapp/agent_app.py | The Flower AgentApp: coordinator role (SuperLink: get_nodes/push/pull, Verifier, decide, explain, emits `cardguard.verdict`) and merchant role (SuperNode: fetches guarded facts from its node's /agent/facts, push_reply_message). Code drives every Grid call. |
 | cardguard/agentapp/launch.py | Starts one decision as a run via the SuperLink Control API (local FAB + user prompt + `agent.decision-id` override) and reads the verdict from the event stream |
 | cardguard/decision/audit.py | Hash-chained append-only log used by the merchant ledger and the processor audit |
@@ -44,14 +47,22 @@ Demo: 3-5 minutes.
 | cardguard/training/retrain.py, join.py, privacy.py | human labels -> federated round + local fine-tune; node registry + join CLI; DP wrapper (server-side fixed clipping + RdpAccountant, equal node weights) |
 | cardguard/agentapp/dispute_agent.py | chargeback evidence + drafted response, leak-scanned (cvv_words=False for displayed text) |
 | pyproject.toml | Python project + `[tool.flwr.app]` (agentapp component, fab-include: only .py/.json/.md/LICENSE) |
-| run_demo.py | Loads .env, checks Stripe TEST keys, mints the reviewer token, starts the merchant; `--federation local-agent`, `--stores a,b,c` |
-| tests/ | 119 offline tests. Jev, Endeavor, the LLM and the Stripe SDK are faked; real-data tests skip without the CSV |
+| run_demo.py | Loads .env, checks Stripe TEST keys, mints the reviewer token and a merchant-to-bank secret, starts the bank attestation node and the merchant; `--federation local-agent`, `--stores a,b,c` |
+| tests/ | Offline tests. Jev, Endeavor, the LLM and the Stripe SDK are faked; the bank node runs in-process (tests/bank_fake.py); real-data tests skip without the CSV |
 | datasets/ | IEEE-CIS train_transaction.csv (git-ignored, Kaggle competition licence) and the feature cache |
 
 ## Invariants - never break these
 1. Card data (number, expiry, CVC) exists only in Stripe Elements (browser) and at Stripe. The merchant
    holds a pm_ token and never logs it; the ledger never holds the token, a card number, or a
    verification id. (The self-hosted issuer node was removed on Sep 29; Stripe test mode is the only processor.)
+1c. The bank node attests, it never processes a payment and never sees a card. It knows a card only by the
+   pseudonymous card_ref (keyed hash of Stripe's TEST card fingerprint; the raw fingerprint never leaves
+   stripe_processor.py) plus the card's coarse issuing region. Its history (city, hours, declines) never
+   leaves it; only the WIRE_SCHEMA bands do. This is a demo correlation over Stripe TEST data, not an
+   issuer-network identity protocol.
+1d. Round 2 is one targeted question, asked only when coordinator.needs_travel_check() holds, only of the
+   node that answered round 1, and it returns only travel_check. implausible raises approve to step_up
+   and never declines; the model never sees travel_check; an unanswered round 2 holds for a person.
 1a. A Grid verdict is accepted by the merchant only if it names the decision and came from the
    SuperNode that fetched the facts through /agent/facts (node id recorded there). Two nodes
    answering one decision = conflicting replies = human review. Network-velocity identity is the
@@ -68,7 +79,8 @@ Demo: 3-5 minutes.
 4. The final verdict is computed in code. Models vote or explain; they never decide alone.
    A model-driven agent's draft is validated, never sent; altered facts are an integrity failure.
 5. Model/endpoint failures degrade gracefully (rules decide, template explains). Never block on them.
-   Stripe is the one hard dependency: no test keys, no payment (no mock mode).
+   Stripe is the one hard dependency: no test keys, no payment (no mock mode). The bank node is optional:
+   without it its facts are "unknown" and no round 2 is asked.
 6. Synthetic test cards and synthetic or licensed research data only. Never put keys in the repo.
 7. Keep all tests passing: `python -m pytest -q`. Add a test for every new safety property.
 
@@ -78,7 +90,8 @@ Demo: 3-5 minutes.
     python -m pytest -q                          # all tests, offline
     python -m cardguard.training.fl              # federated vs local-only tables
     python -m cardguard.training.flower_app      # Flower simulation, writes fl_weights.json
-    python run_demo.py                           # merchant :4242 -> http://127.0.0.1:4242 (Stripe TEST keys in .env)
+    pnpm --dir web install && pnpm --dir web build   # the UI (web/dist); also: typecheck, lint, test
+    python run_demo.py                           # bank :4243 + merchant :4242 -> http://127.0.0.1:4242 (Stripe TEST keys in .env)
     flwr build                                   # FAB of the AgentApp (only .py/.json/.md/LICENSE inside)
 
 Local Flower deployment for the AgentApp (verified 1.39.0). Port 8000 is taken by a local LLM
@@ -108,6 +121,8 @@ user_prompt via StartRunRequest exactly like `flwr chat` does. The SuperLink spa
 - MERCHANT_HOSTS: Host allowlist (DNS-rebinding guard). AUDIT_KEY (hex): HMAC-keyed hash chains.
   FL_ROBUST=1: FedMedian instead of FedAvg in flower_app (hostile-node resistance).
 - STRIPE_SECRET_KEY / STRIPE_PUBLISHABLE_KEY (test keys, required). MERCHANT_ID, MERCHANT_VERTICAL (W/C/R/H/S).
+- BANK_URL / BANK_SECRET (merchant side) and BANK_MERCHANTS=id:secret (bank side): run_demo.py mints and wires
+  them; the bank process never receives the Stripe keys or the reviewer token.
 - .env at the repo root is loaded by run_demo.py and scripts/run_super*.py (cardguard/dotenv.py); .env.example lists everything.
 - LLM_BASE_URL / LLM_API_KEY / LLM_MODEL only for the live injection demo.
 - Flower-served models: FLWR_MODEL_API_KEY (flower.ai Profile -> Settings -> API Keys); model `Flwrlabs/endeavor-v1.0`.
@@ -128,6 +143,8 @@ user_prompt via StartRunRequest exactly like `flwr chat` does. The SuperLink spa
 - Run series: launch.py stores the series id in .demo/series_<superlink>.txt and passes it to
   StartRunRequest, so the coordinator's context.state (the network table) persists across decisions.
   Verified live: three stores, three runs, third purchase flagged with an alert naming all three.
+  A restarted SuperLink forgets saved series: the launcher then starts a new series once (logged)
+  instead of falling back to in-process on every decision.
 - The AgentApp's runtime env is built by `uv sync` from pyproject.toml on every run: every pin there
   must resolve together with flwr's own pins (flwr 1.39 pins cryptography <47). pip-audit flags
   cryptography 46.x; that is an upstream constraint, not something to "fix" in pyproject.
