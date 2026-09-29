@@ -1,10 +1,10 @@
 import type { RefObject } from 'react';
-import { Bug, CircleCheck, Play, ShieldX, SlidersHorizontal, Split } from 'lucide-react';
+import { Bug, ChevronDown, CircleCheck, Loader2, Lock, ShieldX, Split } from 'lucide-react';
 import type { Config } from '../api/types';
+import { PaymentCard } from '../card/PaymentCard';
 import { StripeCard, type StripeCardHandle } from '../card/StripeCard';
 import { formatMoney } from '../format';
 import { ATTACKS, COUNTRIES, SCENARIOS, type Scenario } from '../investigation/scenarios';
-import { Guilloche } from './Guilloche';
 
 export interface Inputs {
   amountCents: number;
@@ -15,7 +15,7 @@ export interface Inputs {
   store: string;
 }
 
-const ICONS: Record<Scenario['id'], typeof Play> = { normal: CircleCheck, collaborative: Split, fraud: ShieldX, rogue: Bug };
+const ICONS: Record<Scenario['id'], typeof CircleCheck> = { normal: CircleCheck, collaborative: Split, fraud: ShieldX, rogue: Bug };
 
 interface Props {
   config: Config;
@@ -25,68 +25,55 @@ interface Props {
   onInputs: (patch: Partial<Inputs>) => void;
   onRun: () => void;
   busy: boolean;
+  after: boolean; // a checkout has already run: paying again is secondary to reading its outcome
   tokenizing: boolean;
   received: string | null;
   error: string | null;
   stripeCard: RefObject<StripeCardHandle | null>;
 }
 
-export function TransactionPanel({ config, scenario, inputs, onScenario, onInputs, onRun, busy, tokenizing, received, error,
+export function TransactionPanel({ config, scenario, inputs, onScenario, onInputs, onRun, busy, after, tokenizing, received, error,
   stripeCard }: Props) {
   const country = COUNTRIES.find((c) => c.code === inputs.buyerCountry)?.name ?? inputs.buyerCountry;
   const chosen = SCENARIOS.find((s) => s.id === scenario);
   return (
-    <aside className="panel panel--left" aria-label="Transaction">
-      <div>
-        <h2 className="section-title">Scenarios <small>real checkouts</small></h2>
-        <div className="scenarios">
-          {SCENARIOS.map((s) => {
-            const Icon = ICONS[s.id];
-            const on = scenario === s.id;
-            return (
-              <button key={s.id} type="button" className={`scenario scenario--${s.id}`} aria-pressed={on}
-                onClick={() => onScenario(s)} disabled={busy}>
-                <Icon size={16} className="scenario__icon" aria-hidden />
-                <span className="scenario__title">{s.title}</span>
-                <span className={`scenario__story${on ? '' : ' is-clamped'}`}>{s.story}</span>
-                {on && <span className="scenario__watch">Watch: {s.watch}</span>}
-              </button>
-            );
-          })}
-        </div>
-      </div>
+    <aside className="checkout" aria-label="Checkout">
+      <header className="checkout__head">
+        <h2>Checkout</h2>
+        <span title="This merchant node">{config.merchant_id}</span>
+      </header>
 
-      <div>
-        <h2 className="section-title">Transaction <small>{config.merchant_id}</small></h2>
-        <div className="ticket">
-          <Guilloche size={200} className="ticket__guilloche" />
-          <div className="ticket__row"><span>Amount</span><span>vertical {config.vertical}</span></div>
-          <div className="ticket__amount">{formatMoney(inputs.amountCents)}</div>
-          <div className="ticket__row"><span>Buyer IP country</span><b>{country}</b></div>
-          <div className="ticket__row"><span>Payment</span><b>Stripe TEST</b></div>
-          <div className="ticket__row"><span>Store agent</span><b>{ATTACKS.find((a) => a.id === inputs.attack)?.name}</b></div>
-          <div className="ticket__stamp">Amount bands here: medium from {formatMoney(config.amount_cuts.medium_from * 100)},
-            high from {formatMoney(config.amount_cuts.high_from * 100)}</div>
-        </div>
+      <div className="scenarios" role="group" aria-label="Scenarios: each is a real checkout">
+        {SCENARIOS.map((s) => {
+          const Icon = ICONS[s.id];
+          return (
+            <button key={s.id} type="button" className={`scenario scenario--${s.id}`} aria-pressed={scenario === s.id}
+              onClick={() => onScenario(s)} disabled={busy}>
+              <span className="scenario__icon" aria-hidden><Icon size={16} /></span>
+              <span className="scenario__title">{s.title}</span>
+            </button>
+          );
+        })}
       </div>
+      <p className="scenario-note" aria-live="polite">
+        {chosen ? chosen.story : 'Pick a scenario. Each one is a real checkout.'}
+      </p>
 
-      <div>
-        <StripeCard ref={stripeCard} publishableKey={config.publishable_key} hint={chosen?.testCard} />
-        <button type="button" className="run-btn" onClick={onRun} disabled={busy}>
-          <Play size={15} aria-hidden /> {tokenizing ? 'Stripe is tokenizing…' : busy ? 'Investigating…' : `Pay ${formatMoney(inputs.amountCents)}`}
+      <PaymentCard amountCents={inputs.amountCents} country={country} tokenizing={tokenizing} paymentMethod={received} />
+
+      <StripeCard ref={stripeCard} publishableKey={config.publishable_key} hint={(chosen ?? SCENARIOS[0])?.testCard} />
+
+      <div className="pay-area">
+        <button type="button" className={`pay-btn${after && !busy ? ' pay-btn--again' : ''}`} onClick={onRun} disabled={busy}>
+          {busy ? <Loader2 size={17} className="spin" aria-hidden /> : <Lock size={16} strokeWidth={2.4} aria-hidden />}
+          {tokenizing ? 'Tokenizing with Stripe…' : busy ? 'Investigating…' : `Pay ${formatMoney(inputs.amountCents)}`}
         </button>
-        {error && <div className="error-note" role="alert" style={{ marginTop: 8 }}>{error}</div>}
+        {error && <div className="error-note" role="alert">{error}</div>}
+        <p className="pay-note">The store receives a token, never the card.</p>
       </div>
 
-      <div>
-        <h2 className="section-title">What the store received <small>{received ? `${received.length} chars` : ''}</small></h2>
-        <div className="ciphertext" aria-label="What the store received">
-          {received ?? 'Nothing yet. After Stripe tokenizes the card, only a payment-method id appears here.'}
-        </div>
-      </div>
-
-      <details className="custom">
-        <summary><SlidersHorizontal size={13} aria-hidden /> Adjust the checkout</summary>
+      <details className="adjust">
+        <summary>Adjust the checkout <ChevronDown size={15} className="disclose__chev" aria-hidden /></summary>
         <div className="field-row">
           <div className="field">
             <label htmlFor="amount">Amount (USD)</label>
@@ -100,6 +87,10 @@ export function TransactionPanel({ config, scenario, inputs, onScenario, onInput
             </select>
           </div>
         </div>
+        <p className="adjust__note">
+          Amount bands at this store (vertical {config.vertical}): medium from {formatMoney(config.amount_cuts.medium_from * 100)},
+          high from {formatMoney(config.amount_cuts.high_from * 100)}.
+        </p>
         {config.stores.length > 1 && (
           <div className="field">
             <label htmlFor="store">Store (one node, several stores)</label>
@@ -116,7 +107,7 @@ export function TransactionPanel({ config, scenario, inputs, onScenario, onInput
         </div>
         <label className="check">
           <input type="checkbox" checked={inputs.modelAgent} onChange={(e) => onInputs({ modelAgent: e.target.checked })} />
-          <span>Model-driven store agent (an LLM drafts the disclosure with the gift message in its prompt; its draft is checked, never sent)</span>
+          <span>Model-driven store agent: an LLM drafts the disclosure with the gift message in its prompt. Its draft is checked, never sent.</span>
         </label>
         {inputs.modelAgent && (
           <div className="field">
@@ -125,6 +116,7 @@ export function TransactionPanel({ config, scenario, inputs, onScenario, onInput
               placeholder="Happy birthday! Or an injection attempt." />
           </div>
         )}
+        {config.demo_controls && <p className="adjust__note">Demo controls are on: this page may choose the buyer country and attack modes.</p>}
       </details>
     </aside>
   );

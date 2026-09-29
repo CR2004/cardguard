@@ -1,5 +1,6 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import { LockKeyhole } from 'lucide-react';
+import { CopyButton } from '../components/IdChip';
 
 // Stripe TEST mode is the only payment rail: the card goes from Stripe Elements (Stripe's own iframe)
 // to Stripe. This page receives a payment-method id (pm_...), never the card, and holds nothing else.
@@ -34,6 +35,9 @@ function loadStripe(): Promise<void> {
   });
 }
 
+// A published Stripe TEST number from the scenario hint, e.g. "Stripe test Visa 4242 4242 4242 4242".
+const testNumber = (hint?: string) => hint?.match(/\d{4}(?: \d{4}){3}/)?.[0];
+
 export const StripeCard = forwardRef<StripeCardHandle, { publishableKey: string; hint?: string }>(
   function StripeCard({ publishableKey, hint }, ref) {
     const host = useRef<HTMLDivElement>(null);
@@ -48,7 +52,14 @@ export const StripeCard = forwardRef<StripeCardHandle, { publishableKey: string;
         if (cancelled || !window.Stripe || !host.current) return;
         stripe.current = window.Stripe(publishableKey);
         card.current = stripe.current.elements().create('card', {
-          style: { base: { color: '#E9EDF7', fontSize: '15px', iconColor: '#9aa5ff', '::placeholder': { color: '#6E7A99' } } },
+          style: {
+            base: {
+              color: '#F2F4FA', fontSize: '16px', iconColor: '#A399FF', fontWeight: '500',
+              fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif',
+              '::placeholder': { color: '#7C87A6' },
+            },
+            invalid: { color: '#FF8A7F', iconColor: '#FF6B5E' },
+          },
         });
         card.current.on('change', (e) => {
           complete.current = e.complete;
@@ -72,15 +83,22 @@ export const StripeCard = forwardRef<StripeCardHandle, { publishableKey: string;
       isComplete: () => complete.current,
     }), []);
 
+    const number = testNumber(hint);
     return (
-      <div className="card-frame">
-        <div className="card-frame__label">
-          <LockKeyhole size={13} aria-hidden />
-          <span>Card entry runs in Stripe Elements (TEST mode); the store gets a payment-method id.</span>
+      <div className="card-field">
+        <div className="card-field__head">
+          <span className="card-field__label" id="card-field-label">Card details</span>
+          <span className="card-field__secure"><LockKeyhole size={12} aria-hidden /> Stripe Elements</span>
         </div>
-        <div ref={host} className="stripe-host" />
-        {hint && <div className="card-frame__hint">Type: {hint}, any future expiry, any CVC.</div>}
-        {error && <div className="card-frame__prompt is-error" role="alert">{error}</div>}
+        <div ref={host} className="stripe-host" role="group" aria-labelledby="card-field-label" />
+        {number && (
+          <div className="card-field__hint">
+            <span>Test card <b className="mono">{number}</b>, any future date, any CVC</span>
+            <CopyButton text={number.replace(/ /g, '')} label="the test card number" className="hint-copy" />
+          </div>
+        )}
+        {hint?.includes('CVC check fails') && <div className="card-field__hint card-field__hint--note">This test card fails its CVC check at Stripe.</div>}
+        {error && <div className="card-field__error" role="alert">{error}</div>}
       </div>
     );
   },

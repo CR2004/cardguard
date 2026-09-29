@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { TraceEvent } from '../api/types';
-import { derive, dwell, sitsOut } from './derive';
+import { derive, dwell, gateThresholds, plainReason, settlementOf, sitsOut } from './derive';
 import flower from './fixtures/flower-collaborative.json';
 
 // A real trace recorded from the local Flower deployment (SuperLink + one SuperNode).
@@ -59,6 +59,20 @@ describe('derive: the picture is a function of real events only', () => {
     expect(s.metrics.rejectedMessages).toBe(0);
   });
 
+  it('marks only the facts the gate itself counted, with its own points', () => {
+    const before = derive(upTo('coord.reply', 2), 'flower');
+    expect(before.evidence.some((x) => x.points)).toBe(false); // nothing is risky before the gate says so
+    const s = derive(events, 'flower');
+    const pts = Object.fromEntries(s.evidence.filter((x) => x.points).map((x) => [x.key, x.points]));
+    expect(pts).toEqual({ country_mismatch: 2, velocity_band: 1, model_risk_band: 2 }); // travel_check scored 0
+  });
+
+  it('puts guard refusals in plain words and passes anything else through', () => {
+    expect(plainReason("'amount_band': card-number-like digits")).toBe('Amount carried card-number-like digits');
+    expect(plainReason("value for 'velocity_band' not in vocabulary")).toBe('Velocity 24 h was not an allowed band');
+    expect(plainReason('unknown key')).toBe('unknown key');
+  });
+
   it('never holds a card-like value', () => {
     const s = derive(events, 'flower', {}, 0);
     const text = JSON.stringify({ ...s, supernodes: [], storeNode: '', runId: '' });
@@ -94,5 +108,28 @@ describe('derive: the picture is a function of real events only', () => {
   it('paces message events long enough to follow and never waits on nothing', () => {
     expect(dwell(undefined)).toBe(0);
     for (const e of events) expect(dwell(e)).toBeGreaterThan(0);
+  });
+
+  it('a Flower verdict the store could not bind is cleared at fallback', () => {
+    const s = derive([
+      { seq: 0, t: 0, kind: 'payment.started', amount_cents: 2400, federation: 'local-agent' },
+      { seq: 1, t: 1, kind: 'gate.decision', decision: 'step_up', lines: [], contributions: [{ fact: 'amount_band=high', points: 2, party: 'store' }] },
+      { seq: 2, t: 2, kind: 'verdict.received', status: 'ignored' },
+      { seq: 3, t: 3, kind: 'fallback' },
+    ], 'flower');
+    expect(s.gate).toBeUndefined();
+    expect(s.mode).toBe('in-process');
+  });
+
+  it('reads the gate thresholds only from its own score line', () => {
+    expect(gateThresholds({ lines: [{ rule: 'score', state: 'info', text: 'Risk points 4: review from 3, decline from 8' }] }))
+      .toEqual({ review: 3, decline: 8 });
+    expect(gateThresholds({ lines: [{ rule: 'score', state: 'info', text: 'Risk points 4' }] })).toBeNull();
+  });
+
+  it('never reports an unconfirmed void as voided', () => {
+    expect(settlementOf(false, 'voided').word).toBe('Voided');
+    expect(settlementOf(false, 'processor_error', 'ProcessorReject').word).toBe('Void unconfirmed');
+    expect(settlementOf(true, 'succeeded').word).toBe('Charged');
   });
 });

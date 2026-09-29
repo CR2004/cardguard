@@ -5,7 +5,7 @@ import { Guilloche } from './Guilloche';
 
 interface Props {
   config: Config | null;
-  status: { tone: 'idle' | 'live' | 'review' | 'done' | 'error'; text: string; detail?: string };
+  status: { tone: 'idle' | 'live' | 'review' | 'done' | 'error'; text: string };
   canReplay: boolean;
   canSkip: boolean;
   onReplay: () => void;
@@ -19,36 +19,37 @@ export function TopBar({ config, status, canReplay, canSkip, onReplay, onSkip, o
   return (
     <header className="topbar">
       <div className="brand">
-        <Guilloche size={26} colors={['#9aa5ff', '#43c9b7', '#cdbb93', '#6f7b9a']} strokeWidth={0.9} />
+        <Guilloche size={28} colors={['#a399ff', '#3fd9c4', '#d9c9a3', '#8a94b3']} strokeWidth={0.9} />
         <span>CardGuard</span>
-        <small>multi-party card risk, card data never in a model</small>
       </div>
-      <div className="env" aria-label="Environment">
-        <span className={`env-chip${flower ? ' env-chip--flower' : ''}`} title="Where the coordinator runs">
-          <b>{flower ? `Flower · ${config?.federation}` : 'In-process · no Flower'}</b>
-        </span>
-        <span className="env-chip env-chip--stripe" title="Who moves the money"><b>Stripe TEST</b></span>
-        <span className="env-chip" title="The bank attests about the cardholder; it never processes the payment">
-          Bank attestation <b>{config?.bank_attestation ? 'connected' : 'not configured'}</b>
-        </span>
-        {config?.demo_controls && <span className="env-chip" title="The page may choose buyer country and attack modes">Demo controls</span>}
-      </div>
+      <ul className="env" aria-label="Environment">
+        <li title="Who moves the money: Stripe, in TEST mode"><i data-c="stripe" aria-hidden />Stripe test</li>
+        <li title="The bank attests about the cardholder; it never processes the payment">
+          <i data-c={config?.bank_attestation ? 'bank' : 'off'} aria-hidden />{config?.bank_attestation ? 'Bank connected' : 'No bank'}
+        </li>
+        <li title={flower ? `The coordinator runs as a Flower AgentApp on ${config?.federation}` : 'No Flower run: the coordinator runs in the store process'}>
+          <i data-c={flower ? 'flower' : 'local'} aria-hidden />{flower ? `Flower ${config?.federation}` : 'In-process'}
+        </li>
+      </ul>
       <div className="topbar__spacer" />
-      <div className="run-status" role="status" aria-live="polite">
-        <span className={`dot dot--${status.tone}`} aria-hidden />
+      <div className="run-status" role="status" aria-live="polite" data-tone={status.tone}>
+        <span className="run-status__dot" aria-hidden />
         <b>{status.text}</b>
-        {status.detail && <span>{status.detail}</span>}
-        {elapsedMs !== undefined && elapsedMs > 0 && <span title="Real time on the nodes, from checkout to the latest step">· {formatMs(elapsedMs)} on the nodes</span>}
+        {elapsedMs !== undefined && elapsedMs > 0 && (
+          <span title="Real time on the nodes, from checkout to the latest step">{formatMs(elapsedMs)}</span>
+        )}
       </div>
-      <button type="button" className="icon-btn" onClick={onReplay} disabled={!canReplay} title="Play this investigation again from its recorded events">
-        <Rewind size={14} aria-hidden /> Replay
-      </button>
-      <button type="button" className="icon-btn" onClick={onSkip} disabled={!canSkip} title="Show every event received so far">
-        <SkipForward size={14} aria-hidden /> Skip
-      </button>
-      <button type="button" className="icon-btn" onClick={onOperations}>
-        <FolderClosed size={14} aria-hidden /> Node records
-      </button>
+      <div className="topbar__actions">
+        <button type="button" className="icon-btn" onClick={onReplay} disabled={!canReplay} aria-label="Replay" title="Play this investigation again from its recorded events">
+          <Rewind size={15} aria-hidden /><span>Replay</span>
+        </button>
+        <button type="button" className="icon-btn" onClick={onSkip} disabled={!canSkip} aria-label="Skip" title="Show every event received so far">
+          <SkipForward size={15} aria-hidden /><span>Skip</span>
+        </button>
+        <button type="button" className="icon-btn icon-btn--solid" onClick={onOperations} aria-label="Node records">
+          <FolderClosed size={15} aria-hidden /><span>Records</span>
+        </button>
+      </div>
     </header>
   );
 }

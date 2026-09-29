@@ -1,6 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useReducedMotion } from 'motion/react';
-import { Lock } from 'lucide-react';
 import { api } from './api/client';
 import type { Config } from './api/types';
 import type { StripeCardHandle } from './card/StripeCard';
@@ -10,10 +9,13 @@ import { InvestigationGraph } from './components/InvestigationGraph';
 import { MetricsStrip } from './components/MetricsStrip';
 import { OperationsDrawer } from './components/OperationsDrawer';
 import { PhaseHeader } from './components/PhaseHeader';
+import { useGateReveal } from './components/PolicyGate';
+import { StepRail } from './components/StepRail';
 import { TopBar } from './components/TopBar';
 import { TraceTimeline } from './components/TraceTimeline';
 import { TransactionPanel, type Inputs } from './components/TransactionPanel';
 import { SCENARIOS, type Scenario } from './investigation/scenarios';
+import { steps } from './investigation/steps';
 import { useInvestigation } from './investigation/useInvestigation';
 
 const first = SCENARIOS[0];
@@ -33,12 +35,19 @@ export function App() {
   const reduced = useReducedMotion() ?? false;
   const inv = useInvestigation(config);
   const { state, view } = inv;
+  const reveal = useGateReveal(view.gate, inv.gateKey, reduced);
+  const tokenizing = state.status === 'tokenizing';
+  // The rail follows the same applied events as the graph; while Stripe tokenizes a new card it starts over.
+  const stepList = useMemo(() => steps(tokenizing ? [] : state.events.slice(0, state.applied), {
+    tokenizing, paymentMethod: tokenizing ? null : state.ciphertext, failed: state.status === 'error',
+    gateRevealing: reveal.evaluating,
+  }), [tokenizing, state.events, state.applied, state.ciphertext, state.status, reveal.evaluating]);
 
   useEffect(() => {
     api.config().then(setConfig).catch((e: Error) => setConfigError(e.message));
   }, []);
 
-  const busy = state.status === 'tokenizing' || (state.status === 'running' && !inv.finished && !inv.awaitingHuman);
+  const busy = tokenizing || (state.status === 'running' && !inv.finished && !inv.awaitingHuman);
 
   function start(next: Inputs) {
     if (!config) return;
@@ -65,8 +74,8 @@ export function App() {
 
   if (!config) {
     return (
-      <div className="app" style={{ placeItems: 'center', display: 'grid' }}>
-        <p className={configError ? 'error-note' : 'muted'} role={configError ? 'alert' : 'status'}>
+      <div className="app app--boot">
+        <p className={configError ? 'error-note' : 'boot-note'} role={configError ? 'alert' : 'status'}>
           {configError ? `The store node did not answer (${configError}). Start it with python run_demo.py.` : 'Connecting to the store node…'}
         </p>
       </div>
@@ -74,12 +83,12 @@ export function App() {
   }
 
   const lastT = state.events.at(-1)?.t;
-  const status = state.status === 'tokenizing' ? { tone: 'live' as const, text: 'Tokenizing', detail: 'Stripe is creating a payment method' }
+  const status = tokenizing ? { tone: 'live' as const, text: 'Tokenizing' }
     : state.status === 'error' ? { tone: 'error' as const, text: 'Not started' }
       : inv.awaitingHuman && state.applied >= state.events.length ? { tone: 'review' as const, text: 'Awaiting a reviewer' }
-        : state.status === 'running' && (inv.live || !inv.finished) ? { tone: 'live' as const, text: 'Investigating', detail: 'real events, paced to read' }
+        : state.status === 'running' && (inv.live || !inv.finished) ? { tone: 'live' as const, text: 'Investigating' }
           : state.status === 'running' ? { tone: 'done' as const, text: 'Complete' }
-            : { tone: 'idle' as const, text: 'Idle' };
+            : { tone: 'idle' as const, text: 'Ready' };
   const showReview = Boolean(view.review && !view.review.decided);
 
   return (
@@ -103,25 +112,28 @@ export function App() {
           onInputs={(patch) => setInputs((cur) => ({ ...cur, ...patch }))}
           onRun={() => start(inputs)}
           busy={busy}
-          tokenizing={state.status === 'tokenizing'}
+          after={state.traceId !== null}
+          tokenizing={tokenizing}
           received={state.ciphertext}
           error={state.error ?? notice}
           stripeCard={stripeCard}
         />
+        <section className="band" aria-label="Investigation steps">
+          <StepRail steps={stepList} />
+        </section>
         <main className="stage-wrap" aria-label="Investigation graph">
           <div className="stage-head">
-            <PhaseHeader view={view} tokenizing={state.status === 'tokenizing'} />
+            <PhaseHeader view={view} tokenizing={tokenizing} hint={SCENARIOS.find((s) => s.id === scenario)} />
           </div>
-          <InvestigationGraph view={view} prev={inv.prevView} reduced={reduced} gateKey={inv.gateKey}
+          <InvestigationGraph view={view} prev={inv.prevView} reduced={reduced} gateKey={inv.gateKey} reveal={reveal}
             buyerCountry={state.traceId ? inputs.buyerCountry : undefined} />
           <div className="stage-foot">
-            <div className="privacy-motto"><Lock size={16} aria-hidden /><span><b>Private data stays local.</b><span>Only minimal evidence moves.</span></span></div>
             <MetricsStrip metrics={view.metrics} flower={view.mode === 'flower'} />
           </div>
         </main>
         {showReview
           ? <HumanReviewPanel view={view} onDecide={inv.decide} />
-          : <Inspector view={view} />}
+          : <Inspector view={view} reveal={reveal} gateKey={inv.gateKey} reduced={reduced} />}
       </div>
       <TraceTimeline events={state.events} applied={state.applied} />
       {drawer && <OperationsDrawer onClose={() => setDrawer(false)} refreshKey={state.runs} />}

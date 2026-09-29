@@ -11,13 +11,16 @@ const OUTCOME_TEXT: Record<string, [string, string]> = {
   no_model_endpoint: ['No model endpoint', 'The model-driven agent had no endpoint configured. Nothing was charged.'],
 };
 
-export function PhaseHeader({ view, tokenizing }: { view: Investigation; tokenizing: boolean }) {
+export function PhaseHeader({ view, tokenizing, hint }: { view: Investigation; tokenizing: boolean; hint?: { title: string; watch: string } }) {
   const flower = view.mode === 'flower';
-  let icon = <Search size={16} aria-hidden />;
-  let title = 'Choose a scenario';
-  let sub = 'Each run is a real checkout. The graph moves only when a node reports a step.';
+  let icon = <Search size={20} aria-hidden />;
+  let title = 'Ready for a checkout';
+  let sub = 'The card goes only to Stripe. Between the parties, only banded evidence moves.';
   let tone = '';
-  if (tokenizing) {
+  if (hint && view.phase === 'idle' && !tokenizing) {
+    title = hint.title;
+    sub = `Watch for this: ${hint.watch}`;
+  } else if (tokenizing) {
     title = 'Tokenizing with Stripe';
     sub = 'The card goes from Stripe Elements to Stripe. The store will receive a payment-method id, never the card.';
   } else if (view.outcome && view.phase === 'done') {
@@ -25,7 +28,7 @@ export function PhaseHeader({ view, tokenizing }: { view: Investigation; tokeniz
     title = t;
     sub = s;
     const bad = ['blocked', 'processor_rejected', 'declined', 'declined_by_human'].includes(view.outcome.outcome);
-    icon = bad ? <CircleX size={16} aria-hidden /> : <CircleCheck size={16} aria-hidden />;
+    icon = bad ? <CircleX size={20} aria-hidden /> : <CircleCheck size={20} aria-hidden />;
     tone = bad ? 'rejected' : '';
   } else {
     switch (view.phase) {
@@ -34,29 +37,29 @@ export function PhaseHeader({ view, tokenizing }: { view: Investigation; tokeniz
         sub = 'The store asks Stripe for the card checks and the bank for its attestation. Neither sends card data.';
         break;
       case 'round1':
-        title = 'Round 1 · independent evidence';
+        title = 'Round 1: independent evidence';
         sub = flower
           ? 'The coordinator asks the store over Flower Grid; its network memory checks other stores.'
           : 'The coordinator runs in-process on the store node: no Flower run for this decision.';
         break;
       case 'conflict':
-        icon = <Split size={16} aria-hidden />;
-        title = 'Evidence conflict · follow-up required';
+        icon = <Split size={20} aria-hidden />;
+        title = 'Evidence conflict: a follow-up is needed';
         sub = view.conflict ?? '';
         tone = 'conflict';
         break;
       case 'round2':
-        icon = <Target size={16} aria-hidden />;
-        title = 'Round 2 · targeted';
+        icon = <Target size={20} aria-hidden />;
+        title = 'Round 2: one targeted question';
         sub = 'Only the bank is asked, through the store’s node. The network sits this round out.';
         break;
       case 'gate':
-        icon = <Gavel size={16} aria-hidden />;
+        icon = <Gavel size={20} aria-hidden />;
         title = 'Policy gate';
         sub = 'Fixed rules decide. Models may vote or explain; they never decide alone.';
         break;
       case 'review':
-        icon = <Hand size={16} aria-hidden />;
+        icon = <Hand size={20} aria-hidden />;
         title = 'Human review';
         sub = 'Automation paused. The payment is held until a person decides.';
         tone = 'review';
