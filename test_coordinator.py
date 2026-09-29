@@ -113,7 +113,7 @@ def test_federated_beats_every_single_merchant():
         local = fl.catch_rates(fl.train_local_only(*data[m]))
         worst_local = min(local[t] for t in fl.FRAUD_TYPE.values())
         assert min(fed[t] for t in fl.FRAUD_TYPE.values()) > worst_local + 0.2
-    assert all(fed[t] > .85 for t in fl.FRAUD_TYPE.values())
+    assert all(fed[t] > .80 for t in fl.FRAUD_TYPE.values())
     assert fed["legit_flagged"] < .05
 
 

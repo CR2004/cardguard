@@ -1,6 +1,10 @@
-"""Federated fraud model on synthetic data.
+"""Federated fraud model: FedAvg over merchants that never share rows.
 
-Three merchants, each mostly seeing ONE kind of fraud:
+Real data (IEEE-CIS via fl_data.py, five verticals = five SuperNodes) when
+data/train_transaction.csv is present; otherwise the synthetic three merchants below,
+which the offline tests use.
+
+Synthetic: three merchants, each mostly seeing ONE kind of fraud:
   electronics  - high-ticket fraud, new customers, at night
   travel       - cross-border fraud, prepaid cards
   digital      - card testing: micro-amounts, bursts, CVC failures
@@ -14,8 +18,11 @@ from __future__ import annotations
 
 import numpy as np
 
-FEATURES = ["high_amount", "micro_amount", "country_mismatch", "prepaid",
-            "cvc_fail", "velocity", "new_customer", "night"]
+import fl_data
+
+# Same feature interface for synthetic and real data, and for merchant.py at checkout.
+# Amount features are relative to the merchant's own history (see fl_data.py / merchant.py).
+FEATURES = fl_data.FEATURES  # high_amount, micro_amount, country_mismatch, credit, velocity, new_customer, night
 MERCHANTS = ["electronics", "travel", "digital"]
 FRAUD_TYPE = {"electronics": "high_ticket", "travel": "cross_border", "digital": "card_testing"}
 
@@ -23,19 +30,19 @@ FRAUD_TYPE = {"electronics": "high_ticket", "travel": "cross_border", "digital":
 def _rows(rng, n, kind):
     """kind: 'legit' or a fraud type. Returns (n, len(FEATURES)) float array."""
     b = lambda p: (rng.random(n) < p).astype(float)
+    # columns: high_amount, micro_amount, country_mismatch, credit, velocity, new_customer, night
     if kind == "legit":
-        amount = rng.lognormal(4.0, 0.8, n)
-        return np.c_[amount > 500, amount < 5, b(.05), b(.05), b(.01),
+        return np.c_[b(.05), b(.05), b(.05), b(.25),
                      np.minimum(rng.poisson(.5, n), 10) / 10, b(.3), b(.1)]
     if kind == "high_ticket":
-        return np.c_[b(.9), b(0), b(.1), b(.1), b(.05),
+        return np.c_[b(.9), b(0), b(.1), b(.6),
                      np.minimum(rng.poisson(1, n), 10) / 10, b(.9), b(.7)]
     if kind == "cross_border":
-        return np.c_[b(.3), b(0), b(.95), b(.5), b(.05),
+        return np.c_[b(.3), b(0), b(.95), b(.7),
                      np.minimum(rng.poisson(1, n), 10) / 10, b(.6), b(.2)]
     if kind == "card_testing":
-        return np.c_[b(0), b(.95), b(.2), b(.3), b(.6),
-                     np.minimum(rng.poisson(8, n), 10) / 10, b(.5), b(.3)]
+        return np.c_[b(0), b(.98), b(.2), b(.3),
+                     np.minimum(rng.poisson(9, n), 10) / 10, b(.6), b(.3)]
     raise ValueError(kind)
 
 
@@ -115,8 +122,13 @@ def train_local_only(X, y, rounds: int = 30):
     return w
 
 
+# Score cuts from the real-data model: "high" is the top ~5% of scores, "medium" the next ~15%
+# (fl.py __main__ prints the quantiles; re-derive if the model changes).
+BAND_CUTS = (0.29, 0.57)
+
+
 def risk_band(p: float) -> str:
-    return "low" if p < .2 else "medium" if p < .6 else "high"
+    return "low" if p < BAND_CUTS[0] else "medium" if p < BAND_CUTS[1] else "high"
 
 
 def catch_rates(w: np.ndarray, threshold: float = .5, seed: int = 99) -> dict:
@@ -141,8 +153,44 @@ def report(seed: int = 0) -> dict:
             for name, w in models.items()}
 
 
+# ---------- real data: IEEE-CIS verticals ----------
+
+def train_federated_real(rounds: int = 100, data: dict | None = None):
+    """FedAvg across the five ProductCD verticals; each node trains on its own rows only."""
+    data = data or fl_data.load()
+    parts = {v: fl_data.split(data, v) for v in fl_data.VERTICALS}
+    w = init_weights()
+    for _ in range(rounds):
+        w = fedavg([local_train(w, *parts[v]) for v in fl_data.VERTICALS])
+    return w, parts
+
+
+def report_real(rounds: int = 100) -> dict:
+    """AUC on each vertical's held-out later transactions: local-only vs federated vs pooled."""
+    data = fl_data.load()
+    w_fed, parts = train_federated_real(rounds, data)
+    tests = {v: fl_data.split(data, v, test=True) for v in fl_data.VERTICALS}
+    Xt = np.vstack([tests[v][0] for v in fl_data.VERTICALS])
+    yt = np.concatenate([tests[v][1] for v in fl_data.VERTICALS])
+    models = {f"local_only_{v}": train_local_only(*parts[v], rounds=rounds) for v in fl_data.VERTICALS}
+    models["federated"] = w_fed
+    models["centralized_upper_bound"] = train_local_only(
+        np.vstack([parts[v][0] for v in fl_data.VERTICALS]),
+        np.concatenate([parts[v][1] for v in fl_data.VERTICALS]), rounds=rounds)
+    return {name: {**{v: auc(tests[v][1], predict_proba(w, tests[v][0])) for v in fl_data.VERTICALS},
+                   "all": auc(yt, predict_proba(w, Xt))}
+            for name, w in models.items()}
+
+
 if __name__ == "__main__":
+    print("synthetic merchants: share of each fraud type caught (p >= 0.5)")
     cols = ["auc", *FRAUD_TYPE.values(), "legit_flagged"]
     print(f"{'model':26s}" + "".join(f"{c:>15s}" for c in cols))
     for name, r in report().items():
         print(f"{name:26s}" + "".join(f"{r[c]:15.3f}" for c in cols))
+    if fl_data.available():
+        print("\nIEEE-CIS (real): AUC on each vertical's held-out later transactions")
+        cols = [*fl_data.VERTICALS, "all"]
+        print(f"{'model':26s}" + "".join(f"{c:>8s}" for c in cols))
+        for name, r in report_real().items():
+            print(f"{name:26s}" + "".join(f"{r[c]:8.3f}" for c in cols))

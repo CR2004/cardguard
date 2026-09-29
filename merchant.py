@@ -11,8 +11,10 @@ With no key set, runs in MOCK mode so the whole flow works offline.
 """
 from __future__ import annotations
 
+import collections
 import hashlib
 import hmac
+import json
 import os
 import secrets
 import time
@@ -25,9 +27,62 @@ from coordinator import decide
 from explain import explain
 from guard import Ledger, WireViolation
 
-# Global weights from the Flower run (python flower_app.py); train in-process if missing.
-FL_WEIGHTS = (np.load("fl_weights.npy") if os.path.exists("fl_weights.npy")
-              else fl.train_federated()[0])
+
+class MerchantLedger(Ledger):
+    """Ledger plus local audit context per entry (how bands were cut). Logged, never sent."""
+
+    def disclose(self, source, purpose, payload, note=None):
+        try:
+            return super().disclose(source, purpose, payload)
+        finally:
+            if note:
+                self.entries[-1]["note"] = note
+
+
+def load_weights() -> np.ndarray:
+    """Global weights from the Flower run (python flower_app.py); train in-process if missing."""
+    if os.path.exists("fl_weights.json"):
+        with open("fl_weights.json") as f:
+            saved = json.load(f)
+        if saved["features"] != fl.FEATURES:
+            raise SystemExit("fl_weights.json was trained on different features; rerun flower_app.py")
+        return np.array(saved["weights"])
+    if os.path.exists("fl_weights.npy"):
+        w = np.load("fl_weights.npy")
+        if len(w) == len(fl.FEATURES) + 1:
+            return w
+    return fl.train_federated()[0]
+
+
+FL_WEIGHTS = load_weights()
+
+# Amount bands are relative to THIS merchant's usual order size, so "high" means unusual here.
+# Seed cuts (p10 / median / p90, dollars) come from the IEEE-CIS vertical this merchant plays
+# (fl_data.py); completed charges then move the cuts as real history accumulates.
+VERTICAL = os.environ.get("MERCHANT_VERTICAL", "W")
+SEED_CUTS = {"W": (31, 79, 318), "C": (11, 32, 87), "R": (50, 125, 300),
+             "H": (25, 50, 150), "S": (10, 30, 100)}
+MIN_HISTORY = 200  # completed charges before the merchant's own quantiles replace the seed cuts
+
+
+class AmountBaseline:
+    """Rolling quantiles of completed charges only (attempts cannot shift the baseline)."""
+
+    def __init__(self, seed: tuple[float, float, float], maxlen: int = 5000):
+        self.seed = seed
+        self.history: collections.deque = collections.deque(maxlen=maxlen)
+
+    def record_completed(self, amount_dollars: float) -> None:
+        self.history.append(amount_dollars)
+
+    def cuts(self) -> tuple[tuple[float, float, float], str]:
+        if len(self.history) >= MIN_HISTORY:
+            p10, p50, p90 = np.percentile(list(self.history), [10, 50, 90])
+            return (float(p10), float(p50), float(p90)), "merchant_quantiles"
+        return self.seed, f"seed_{VERTICAL}"
+
+
+baseline = AmountBaseline(SEED_CUTS[VERTICAL])
 
 SK = os.environ.get("STRIPE_SECRET_KEY", "")
 PK = os.environ.get("STRIPE_PUBLISHABLE_KEY", "")
@@ -41,7 +96,7 @@ if not MOCK:
 
 TOKEN_KEY = secrets.token_bytes(32)  # lives only on this node
 app = Flask(__name__, static_folder=".")
-ledger = Ledger()
+ledger = MerchantLedger()
 pending: dict[str, dict] = {}
 seen: dict[str, list[float]] = {}  # card fingerprint -> purchase timestamps
 
@@ -84,7 +139,9 @@ def index():
 
 @app.get("/config")
 def config():
-    return jsonify({"publishableKey": PK, "mock": MOCK})
+    (p10, p50, p90), basis = baseline.cuts()
+    return jsonify({"publishableKey": PK, "mock": MOCK, "vertical": VERTICAL,
+                    "amount_cuts": {"medium_from": p50, "high_from": p90, "basis": basis}})
 
 
 @app.post("/checkout")
@@ -97,9 +154,11 @@ def checkout():
     hits = [t for t in seen.get(card["fingerprint"], []) if now - t < 86400]
     seen[card["fingerprint"]] = hits + [now]
 
+    dollars = amount / 100
+    (p10, p50, p90), basis = baseline.cuts()
     payload = {
         "token": tokenize(card["fingerprint"]),
-        "amount_band": band(amount, (5_000, 50_000)),  # <$50, <$500, >=$500
+        "amount_band": band(dollars, (p50, p90)),  # relative: below median / up to p90 / above
         "country_mismatch": "yes" if card["country"] != body.get("buyer_country", "US") else "no",
         "card_funding": card["funding"] if card["funding"] in {"credit", "debit", "prepaid"} else "unknown",
         "cvc_check": {"pass": "pass", "fail": "fail"}.get(card["cvc_check"], "unavailable"),
@@ -108,10 +167,10 @@ def checkout():
     }
     # Federated model scores raw local features here; only the band crosses the wire.
     hour = int(body.get("hour", time.localtime().tm_hour))  # explicit for tests/demo
-    features = np.array([[amount >= 50_000, amount < 500, payload["country_mismatch"] == "yes",
-                          card["funding"] == "prepaid", card["cvc_check"] == "fail",
+    features = np.array([[dollars > p90, dollars < p10, payload["country_mismatch"] == "yes",
+                          card["funding"] == "credit",
                           min(len(hits), 10) / 10, not hits, hour < 6]],
-                        dtype=float)
+                        dtype=float)  # same order as fl.FEATURES
     payload["model_risk_band"] = fl.risk_band(float(fl.predict_proba(FL_WEIGHTS, features)[0]))
 
     if body.get("sabotage"):  # compromised merchant agent tries three ways to leak the card
@@ -123,17 +182,20 @@ def checkout():
         blocked = []
         for a in attempts:
             try:
-                ledger.disclose("merchant", "fraud-risk", a)
+                ledger.disclose("merchant", "fraud-risk", a, note={"band_basis": basis})
             except WireViolation as e:
                 blocked.append(str(e))
         return jsonify({"outcome": "blocked", "blocked": blocked, "charged": False})
 
-    facts = ledger.disclose("merchant", "fraud-risk", payload)
+    facts = ledger.disclose("merchant", "fraud-risk", payload, note={"band_basis": basis})
     verdict = decide(facts)  # swap for the Flower Grid call to the coordinator AgentApp
     verdict["explanation"] = explain(verdict)  # display only; never changes the decision
 
     if verdict["decision"] == "approve":
-        return jsonify({"outcome": "approved", "verdict": verdict, "payment": charge(pm_id, amount)})
+        payment = charge(pm_id, amount)
+        if payment["status"] == "succeeded":
+            baseline.record_completed(dollars)
+        return jsonify({"outcome": "approved", "verdict": verdict, "payment": payment})
     if verdict["decision"] == "step_up":
         rid = secrets.token_hex(4)
         pending[rid] = {"pm_id": pm_id, "amount": amount, "facts": facts, "verdict": verdict}
@@ -153,7 +215,10 @@ def review(rid, action):
     if not item:
         return jsonify({"error": "unknown review"}), 404
     if action == "approve":
-        return jsonify({"outcome": "approved_by_human", "payment": charge(item["pm_id"], item["amount"])})
+        payment = charge(item["pm_id"], item["amount"])
+        if payment["status"] == "succeeded":
+            baseline.record_completed(item["amount"] / 100)
+        return jsonify({"outcome": "approved_by_human", "payment": payment})
     return jsonify({"outcome": "declined_by_human", "charged": False})
 
 

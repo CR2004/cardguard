@@ -82,8 +82,8 @@ def build_cache() -> dict:
     for v in VERTICALS:
         m = vert == v
         train_amt = amt[m & ~is_test]
-        p10, p90 = np.percentile(train_amt, 10), np.percentile(train_amt, 90)
-        cuts[v] = (float(p10), float(p90))
+        p10, p50, p90 = np.percentile(train_amt, [10, 50, 90])
+        cuts[v] = (float(p10), float(p50), float(p90))  # relative amount bands: low < p50 <= medium < p90 <= high
         X[m, 0] = amt[m] > p90
         X[m, 1] = amt[m] < p10
     X[:, 2] = [x[3] == "" or x[3] != HOME_COUNTRY for x in rows]
@@ -98,7 +98,7 @@ def build_cache() -> dict:
 
 
 def load() -> dict:
-    """{'X','y','vert','is_test','cuts': {vertical: (p10, p90)}}"""
+    """{'X','y','vert','is_test','cuts': {vertical: (p10, p50, p90)}}"""
     if not os.path.exists(CACHE):
         return build_cache()
     z = np.load(CACHE, allow_pickle=False)
@@ -118,4 +118,4 @@ if __name__ == "__main__":
         Xtr, ytr = split(d, v)
         Xte, yte = split(d, v, test=True)
         print(f"{v}: train {len(ytr):7,} (fraud {ytr.mean():.2%})  test {len(yte):6,} (fraud {yte.mean():.2%})"
-              f"  amount cuts p10/p90 = ${d['cuts'][v][0]:.0f}/${d['cuts'][v][1]:.0f}")
+              f"  amount p10/p50/p90 = ${d['cuts'][v][0]:.0f}/${d['cuts'][v][1]:.0f}/${d['cuts'][v][2]:.0f}")

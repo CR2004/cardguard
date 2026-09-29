@@ -35,7 +35,7 @@ WEIGHTS = {
 }
 
 FACT_MEANINGS = {
-    "amount_band": "low < $50, medium < $500, high >= $500",
+    "amount_band": "relative to this merchant's usual order size: low below its median, medium up to its 90th percentile, high above",
     "country_mismatch": "card issuing country differs from buyer's IP country",
     "card_funding": "credit, debit or prepaid card",
     "cvc_check": "whether the card security code check passed",

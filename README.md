@@ -9,8 +9,9 @@ facts cross the wire; every disclosure and every blocked leak is logged.
 | File | What it does |
 |---|---|
 | guard.py | Allowlist schema, Luhn / expiry / CVV / injection scanner, disclosure ledger |
-| fl.py | Synthetic transactions for 3 merchants (each sees a different fraud type), logistic regression, FedAvg |
-| flower_app.py | Same training as a Flower 1.39 ServerApp + ClientApp (3 SuperNodes), saves fl_weights.npy |
+| fl_data.py | Real transactions: IEEE-CIS (Vesta) split into 5 product verticals, features relative to each vertical, time-based holdout |
+| fl.py | Logistic regression + FedAvg in numpy; synthetic 3-merchant data for offline tests, real 5-vertical training when the data is present |
+| flower_app.py | Same training as a Flower 1.39 ServerApp + ClientApp: one SuperNode per vertical (5) or per synthetic merchant (3); saves fl_weights.json |
 | explain.py | One-line plain-English explanation of each verdict by Flower Endeavor (display only; template fallback) |
 | coordinator.py | Jev (TypeSafe System One) + rules; more cautious vote wins, low-confidence approvals go to a human |
 | merchant.py | Flask merchant node: Stripe test mode, federated risk band, review queue |
@@ -24,10 +25,14 @@ Python 3.11 or 3.12 and [uv](https://docs.astral.sh/uv/) (or plain venv + pip).
     uv pip install --python .venv/bin/python -r requirements.txt
     source .venv/bin/activate
 
-    python -m pytest -q            # 37 tests, offline (Jev, Endeavor and Stripe faked/mocked)
-    python fl.py                   # federated vs local-only catch-rate table
-    python flower_app.py           # federated training on Flower (3 SuperNodes), writes fl_weights.npy
+    python -m pytest -q            # 46 tests, offline (Jev, Endeavor and Stripe faked/mocked)
+    python fl.py                   # federated vs local-only tables (synthetic, and real if present)
+    python flower_app.py           # federated training on Flower, one SuperNode per merchant, writes fl_weights.json
     python merchant.py             # http://127.0.0.1:4242  (MOCK mode without keys)
+
+Real data (optional, recommended): see data/README.md. Put IEEE-CIS `train_transaction.csv`
+in `data/`; `fl_data.py` splits it into the five ProductCD verticals (W, C, R, H, S) as five
+merchants and `flower_app.py` trains across them. Without it, training and tests use synthetic data.
 
 Keys (all optional; each piece falls back when missing). Env vars only, never in the repo:
 
@@ -36,27 +41,44 @@ Keys (all optional; each piece falls back when missing). Env vars only, never in
     export JEV_MODEL=jev-x.y.z             # optional: pin the Jev version
     export ENDEAVOR_BASE_URL=... ENDEAVOR_API_KEY=...   # or FLWR_RUNTIME_* inside an AgentApp
 
-## Headline numbers (synthetic data, python fl.py)
+## Headline numbers
 
-Share of each fraud type caught at p >= 0.5:
+**Real data, IEEE-CIS (590,540 transactions, 3.5% fraud), `python fl.py`.** Five product
+verticals act as five merchants. AUC on each vertical's held-out *later* transactions, from a
+7-feature logistic regression (the same features merchant.py computes at checkout):
+
+| Model | W | C | R | H | S | all verticals |
+|---|---|---|---|---|---|---|
+| Any single vertical alone (best) | 0.654 | 0.624 | 0.668 | 0.609 | 0.361 | 0.678 |
+| **Federated (Flower, FedAvg, 5 SuperNodes)** | 0.651 | 0.621 | 0.552 | 0.526 | 0.348 | **0.730** |
+| Centralized (pooled data, not allowed) | 0.653 | 0.625 | 0.553 | 0.517 | 0.351 | 0.732 |
+
+Federated matches pooling the data (0.730 vs 0.732) and beats every single-vertical model on
+the cross-vertical test, without any vertical seeing another's rows. Absolute AUC is modest
+because only 7 coarse, wire-safe features are used; S drifts between its train and test windows.
+
+**Synthetic data (offline tests).** Three merchants, each mostly seeing one fraud type; share of
+each type caught at p >= 0.5:
 
 | Model | high-ticket | cross-border | card testing | legit flagged |
 |---|---|---|---|---|
-| Electronics merchant alone | 91% | 39% | 50% | 0.6% |
-| Travel merchant alone | 66% | 96% | 61% | 4.9% |
-| Digital-goods merchant alone | 22% | 25% | 98% | 0.2% |
-| **Federated (Flower, FedAvg)** | **91%** | **89%** | **98%** | 2.4% |
-| Centralized (pooled data, not allowed) | 91% | 89% | 98% | 2.5% |
-
-Federated matches pooling all the data, without pooling it.
+| Electronics merchant alone | 92% | 33% | 21% | 3.8% |
+| Travel merchant alone | 41% | 95% | 18% | 4.8% |
+| Digital-goods merchant alone | 6% | 5% | 99% | 0.9% |
+| **Federated (Flower, FedAvg)** | **86%** | **84%** | **97%** | 4.5% |
+| Centralized (pooled data, not allowed) | 86% | 84% | 97% | 4.5% |
 
 ## Decision logic
 
 - Jev sees only the banded facts plus one-line meanings. Never tokens, payment IDs or customer text
   (Jev is not adversary-hardened, so attacker-controlled content must not reach it).
+- A failed card security-code check (cvc_check=fail) is a hard decline before any vote.
 - Rules and Jev each vote approve / step_up / decline; the more cautious one wins.
 - An approval with Jev confidence < 0.8 becomes step_up (human review).
-- Jev down or no key -> rules decide alone; the verdict records which.
+- A malformed or failed Jev answer is retried once; then rules decide alone. The verdict records which.
+- Amount bands are relative to the merchant's own order history (below median / up to p90 / above),
+  seeded from its vertical's quantiles and updated only by completed charges, so "high" means
+  unusual for this merchant and the wire never carries a dollar amount.
 
 ## Demo script
 

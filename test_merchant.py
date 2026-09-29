@@ -64,6 +64,29 @@ def test_federated_model_band_crosses_wire_as_band_only(client):
     assert fields["model_risk_band"] == "high"
 
 
+def test_same_amount_is_a_different_band_at_a_different_merchant(client):
+    """$150 is unusual for a merchant whose orders are ~$30 and ordinary for one at ~$125."""
+    merchant.baseline.seed = merchant.SEED_CUTS["S"]
+    buy(client, pm="pm_a", amount=15000)
+    merchant.baseline.seed = merchant.SEED_CUTS["R"]
+    buy(client, pm="pm_b", amount=15000)
+    merchant.baseline.seed = merchant.SEED_CUTS[merchant.VERTICAL]
+    bands = [e["fields"]["amount_band"] for e in merchant.ledger.entries]
+    assert bands == ["high", "medium"]
+
+
+def test_baseline_learns_only_from_completed_charges(client):
+    merchant.baseline.history.clear()
+    buy(client, amount=90000, country="DE")            # needs review: not completed
+    assert len(merchant.baseline.history) == 0
+    buy(client)                                         # approved and charged
+    assert list(merchant.baseline.history) == [20.0]
+    assert merchant.baseline.cuts()[1].startswith("seed_")   # below MIN_HISTORY: seed cuts
+    last = merchant.ledger.entries[-1]
+    assert last["note"]["band_basis"].startswith("seed_")
+    assert "note" not in last["fields"] and "band_basis" not in last["fields"]
+
+
 def test_refuses_live_keys(monkeypatch):
     import importlib
     monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_live_nope")
