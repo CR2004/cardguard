@@ -81,11 +81,15 @@ def test_role_detection():
 
 
 def test_end_to_end_decision_over_grid():
-    verdict, grid, events = run_coordinator(lambda body: {"facts": {**LOW, "amount_band": "high", "country_mismatch": "yes"}})
+    verdict, grid, events = run_coordinator(lambda body: {"facts": {**LOW, "amount_band": "high", "country_mismatch": "yes",
+                                                                     "issuer_behavior": "low"}})
     assert verdict["decision"] == "step_up" and verdict["decided_by"] == "rules"
     assert verdict["decision_id"] == "d1" and verdict["explanation"]["by"] == "template"
-    assert [k for k, _ in grid.wire] == ["question", "reply"]
+    # country mismatch, clean card checks, an ordinary cardholder: one round-2 question, answered badly here
+    assert [k for k, _ in grid.wire] == ["question", "reply", "question", "reply"]
     assert json.loads(grid.wire[0][1]) == {"purpose": "fraud-risk", "decision_id": "d1"}
+    assert json.loads(grid.wire[2][1]) == {"purpose": "travel-check", "decision_id": "d1"}
+    assert "travel_check" not in verdict["facts"] and verdict["round_2_unanswered"]   # no answer: a person decides
     delta = next(e for e in events.items if e["type"] == "response.output_text.delta")
     assert "step_up" in delta["delta"]
 
@@ -254,31 +258,45 @@ def test_launcher_reuses_the_run_series(tmp_path, monkeypatch):
     assert seen["series"] == 42
 
 
-def test_launcher_retries_without_stale_series_after_superlink_restart(tmp_path, monkeypatch):
-    """A saved series belongs to a dead SuperLink (it restarts forget them): the launcher
-    retries StartRun once without the series instead of failing the Grid path."""
+def test_launcher_starts_a_new_series_when_the_superlink_forgot_the_saved_one(tmp_path, monkeypatch):
+    """A restarted SuperLink no longer knows the saved series: one retry without it, never a silent fallback."""
     from cardguard.agentapp import launch
     monkeypatch.setattr(launch, "_series_file", lambda s: tmp_path / f"series_{s}.txt")
-    launch.save_series("local-agent", 111)
-    seen = {}
+    launch.save_series("local-agent", 7)
+    asked = []
     class Res:
-        def __init__(self): self.run_id, self.series_id = 9, 222
+        def __init__(self): self.run_id, self.series_id = 9, 99
         def HasField(self, f): return True
     class Stub:
-        def __init__(self): self.calls = 0
         def StartRun(self, req):
-            self.calls += 1
-            seen[self.calls] = req.series_id if req.HasField("series_id") else None
-            if self.calls == 1:
-                assert req.HasField("series_id")
-                raise ConnectionError("500 run series not found")
+            asked.append(req.series_id if req.HasField("series_id") else None)
+            if req.HasField("series_id"):
+                raise RuntimeError("500: run series not found")
             return Res()
-        def close(self): pass
-    stub = Stub()
     monkeypatch.setattr(launch, "_local_fab", lambda p: NS(fab_hash="h", fab_content=b"x"))
     monkeypatch.setattr("flwr.cli.flower_config.read_superlink_connection", lambda s: NS(federation=""))
-    assert launch._start_run(stub, "local-agent", "d1", "p", ".") == 9
-    assert seen == {1: 111, 2: None} and launch.load_series("local-agent") == 222
+    assert launch._start_run(Stub(), "local-agent", "d1", "p", ".") == 9
+    assert asked == [7, 7, None] and launch.load_series("local-agent") == 99   # once more with it, then without
+
+
+def test_launcher_keeps_the_series_through_a_transient_failure(tmp_path, monkeypatch):
+    from cardguard.agentapp import launch
+    monkeypatch.setattr(launch, "_series_file", lambda s: tmp_path / f"series_{s}.txt")
+    launch.save_series("local-agent", 7)
+    asked = []
+    class Res:
+        def __init__(self): self.run_id, self.series_id = 9, 7
+        def HasField(self, f): return True
+    class Stub:
+        def StartRun(self, req):
+            asked.append(req.series_id if req.HasField("series_id") else None)
+            if len(asked) == 1:
+                raise RuntimeError("503: unavailable")
+            return Res()
+    monkeypatch.setattr(launch, "_local_fab", lambda p: NS(fab_hash="h", fab_content=b"x"))
+    monkeypatch.setattr("flwr.cli.flower_config.read_superlink_connection", lambda s: NS(federation=""))
+    assert launch._start_run(Stub(), "local-agent", "d1", "p", ".") == 9
+    assert asked == [7, 7] and launch.load_series("local-agent") == 7
 
 
 def test_main_dispatches_by_role(monkeypatch):

@@ -19,7 +19,8 @@ def fake_sdk(decline=False, cvc="pass"):
         if decline:
             raise CardError()
         return NS(status="succeeded", id="pi_test_abc")
-    return NS(api_key=None, PaymentMethod=NS(retrieve=lambda pm: NS(card=card)),
+    return NS(api_key=None, PaymentMethod=NS(retrieve=lambda pm: NS(card=card), attach=lambda pm, customer=None: NS(id=pm)),
+              SetupIntent=NS(create=lambda **kw: NS(status="succeeded")), Customer=NS(create=lambda **kw: NS(id="cus_test")),
               PaymentIntent=NS(create=create), error=NS(CardError=CardError))
 
 
