@@ -42,6 +42,9 @@ WEIGHTS = {
     ("model_risk_band", "medium"): 1, ("model_risk_band", "high"): 2,
     # the network agent's view: the same card at several merchants within minutes is card testing
     ("network_velocity_band", "medium"): 1, ("network_velocity_band", "high"): 5,
+    # four small models, one per signal family (transaction, identity, geography, behavior), stacked;
+    # same weight as the model band it partly overlaps, so it confirms rather than double-counts
+    ("specialist_stack_band", "medium"): 1, ("specialist_stack_band", "high"): 2,
     # the bank's round-1 attestation about the cardholder (unknown = the bank did not answer: no points)
     ("issuer_behavior", "medium"): 1, ("issuer_behavior", "high"): 2,
     ("issuer_recent_declines", "some"): 1, ("issuer_recent_declines", "many"): 2,
@@ -56,6 +59,7 @@ FACT_MEANINGS = {
     "new_customer": "first time this merchant has seen this card",
     "model_risk_band": "fraud risk from a federated model trained across merchants",
     "network_velocity_band": "how many different merchants saw this same card in the last ten minutes: low one, medium two, high three or more",
+    "specialist_stack_band": "fraud risk from four small models each trained on one signal family, transaction, identity, geography and behavior, and combined",
     "issuer_behavior": "the card-issuing bank's view of how unusual this cardholder's recent activity is",
     "issuer_recent_declines": "how many of this card's recent payments the issuing bank declined",
 }

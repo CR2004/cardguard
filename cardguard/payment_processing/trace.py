@@ -26,7 +26,7 @@ MAX_TRACES, MAX_EVENTS = 50, 200
 PARTY_OF = {"cvc_check": "stripe", "card_funding": "stripe",
             "issuer_behavior": "bank", "issuer_recent_declines": "bank", "travel_check": "bank",
             "amount_band": "store", "country_mismatch": "store", "velocity_band": "store",
-            "new_customer": "store", "model_risk_band": "store",
+            "new_customer": "store", "model_risk_band": "store", "specialist_stack_band": "store",
             "network_velocity_band": "network"}
 
 
