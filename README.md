@@ -491,6 +491,37 @@ ever see banded facts; the verdict stays computed in code; no card data anywhere
 | tests/ | offline; Jev, Endeavor, the LLM and the Stripe SDK are faked |
 | run_demo.py, scripts/ | demo runner; SuperLink and SuperNode launchers |
 
+## Human in the loop: what is implemented
+
+After the agents flag a payment as fraud-suspected, a human gives a structured opinion that is audited,
+persisted and fed back as a training label. Card data never appears in any of it.
+
+- **Fraud-suspected = `step_up` or a soft `decline`.** Soft declines (no `hard` flag) go to the same
+  review queue as a second look: the verification stays open, nothing is charged, and a human confirms
+  (decline, label 1) or overturns (approve, label 0). Unreviewed items are voided after one hour.
+  Hard declines (`cvc_check=fail`) stay final and are never queued. `SECOND_LOOK_ON_DECLINE=0` restores
+  final soft declines (default on).
+- **Structured opinion.** `POST /reviews/<id>/approve|decline` (reviewer token) takes an optional JSON
+  body `{"reason": ..., "note": ...}`. Reasons are a closed vocabulary: `card_testing`, `ring_pattern`,
+  `known_customer`, `customer_verified`, `amount_out_of_pattern`, `other`; anything else is a 400 and
+  changes nothing. The note (max 200 chars) is scanned for card-like data, stays on this node, and is
+  never sent to the coordinator, a model or `Ledger.disclose()`. `X-Reviewer-Id` (letters, digits, `-_`,
+  max 32) names the reviewer.
+- **Audit.** Every opinion (and every expiry) is appended to a hash-chained log (`REVIEW_AUDIT_FILE`,
+  default `.demo/review_audit.jsonl`): review id, decision, reason, reviewer, the model band and cites the
+  reviewer was shown, timestamp, time to review, and only the note's length and SHA-256. A file whose
+  chain fails verification is moved aside at startup.
+- **Persisted labels.** Human reviews and chargebacks append to `LABELS_FILE` (default
+  `.demo/labels.jsonl`): the 9 local features, label, source (`review`|`chargeback`), reason,
+  decision id, timestamp. Loaded at startup (last 2000; corrupt lines are skipped).
+- **Metrics.** `GET /review-stats` (reviewer token): reviews done, queue length and oldest age,
+  model-versus-human agreement (band high/medium counts as "model says fraud"), overturn rate of soft
+  declines, median seconds to review, counts by reason, audit chain status. The checkout page has a reason
+  dropdown and note box on each queued item and a "Review stats" button.
+- **Two reviewers.** `TWO_REVIEWER_ABOVE_CENTS` (default 0 = off): above that amount the first approval
+  is recorded as `awaiting_second` (HTTP 202) and a different `X-Reviewer-Id` must approve to complete
+  it. A decline needs one reviewer.
+
 ## Environment (.env, see .env.example)
 
 `STRIPE_SECRET_KEY`, `STRIPE_PUBLISHABLE_KEY` (test keys, required) · `FLWR_MODEL_API_KEY` (live

@@ -76,6 +76,8 @@
     <div id="alerts" class="muted">None.</div>
     <h2>Human review queue</h2>
     <div id="reviews" class="muted">Nothing waiting.</div>
+    <div class="row" style="margin-top:6px"><input id="reviewerid" placeholder="your reviewer id (optional)" maxlength="32"><button id="reviewstatsbtn" class="ghost">Review stats</button></div>
+    <div id="reviewstats" class="muted" style="margin-top:6px"></div>
     <h2>Disclosure ledger</h2>
     <div>Card-like values in anything disclosed (re-scan of the ledger): <span class="big" id="seen">0</span></div>
     <div id="ledger"></div>
@@ -158,8 +160,13 @@ function showResult(res) {
   }
 }
 
-async function act(id, action) {
-  const res = await (await fetch(`/reviews/${id}/${action}`, { method: 'POST', headers: reviewerHeaders() })).json();
+const REASONS = ['card_testing', 'ring_pattern', 'known_customer', 'customer_verified', 'amount_out_of_pattern', 'other'];
+async function act(id, action, reason, note) {   // optional structured opinion: closed reason + short note that stays on this node
+  const body = {}; if (reason) body.reason = reason; if (note) body.note = note;
+  const headers = { ...reviewerHeaders(), 'Content-Type': 'application/json' };
+  const rid = $('reviewerid').value.trim();
+  if (rid) headers['X-Reviewer-Id'] = rid;
+  const res = await (await fetch(`/reviews/${id}/${action}`, { method: 'POST', headers, body: JSON.stringify(body) })).json();
   if (res.error) { $('result').textContent = res.error; if (res.error.includes('token')) { reviewerToken = null; try { sessionStorage.removeItem('reviewer'); } catch (e) {} } return; }
   showResult(res); refresh();
 }
@@ -207,14 +214,29 @@ async function refresh() {
     const box = el('div', undefined, 'review');
     box.appendChild(el('div', `$${(r.amount / 100).toFixed(2)} · ${r.verdict.cites.join(', ') || 'no flags'}`));
     box.appendChild(el('div', Object.entries(r.facts).filter(([k]) => k !== 'token').map(([k, v]) => `${k}=${v}`).join(' '), 'muted'));
-    const a = el('button', 'Approve'); a.onclick = () => act(r.id, 'approve');
-    const d = el('button', 'Decline', 'ghost'); d.onclick = () => act(r.id, 'decline');
-    box.appendChild(a); box.appendChild(document.createTextNode(' ')); box.appendChild(d);
+    if (r.suspected === 'soft_decline') box.appendChild(el('div', 'Second look: the agents declined this. Confirm (decline) or overturn (approve).', 'muted'));
+    if (r.awaiting_second) box.appendChild(el('div', 'One approval recorded; a different reviewer id must approve too.', 'muted'));
+    const sel = el('select'); sel.appendChild(new Option('reason (optional)', ''));
+    REASONS.forEach(x => sel.appendChild(new Option(x.replace(/_/g, ' '), x)));
+    const note = el('input'); note.maxLength = 200; note.placeholder = 'note (optional, stays on this node)';
+    const a = el('button', 'Approve'); a.onclick = () => act(r.id, 'approve', sel.value, note.value);
+    const d = el('button', 'Decline', 'ghost'); d.onclick = () => act(r.id, 'decline', sel.value, note.value);
+    box.appendChild(sel); box.appendChild(note); box.appendChild(a); box.appendChild(document.createTextNode(' ')); box.appendChild(d);
     R.appendChild(box);
   });
 }
 
 $('buy').onclick = buy;
+$('reviewstatsbtn').onclick = async () => {
+  const s = await (await fetch('/review-stats', { headers: reviewerHeaders() })).json();
+  if (s.error) { $('reviewstats').textContent = s.error; return; }
+  const pct = v => v === null ? 'n/a' : Math.round(v * 100) + '%';
+  $('reviewstats').textContent = `${s.reviews_done} reviewed · queue ${s.queue_length}` +
+    (s.oldest_age_seconds !== null ? ` (oldest ${Math.round(s.oldest_age_seconds)}s)` : '') +
+    ` · model/human agreement ${pct(s.model_human_agreement)} · soft declines overturned ${pct(s.soft_decline_overturn_rate)}` +
+    ` · median ${s.median_seconds_to_review ?? 'n/a'}s · reasons ${Object.entries(s.by_reason).map(([k, v]) => k + ' ' + v).join(', ') || 'none'}` +
+    ` · audit chain ${s.audit_chain_ok ? 'intact' : 'BROKEN'}`;
+};
 $('retrain').onclick = async () => {
   $('retrainout').textContent = 'Running a federated round across all nodes…';
   const r = await (await fetch('/agent/retrain', { method: 'POST', headers: reviewerHeaders() })).json();

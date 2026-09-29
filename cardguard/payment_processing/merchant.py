@@ -31,6 +31,7 @@ from cardguard import ROOT
 from cardguard.decision import audit
 from cardguard.decision import network as net
 from cardguard.decision.guard import Ledger, WireViolation, strip_for_wire
+from cardguard.payment_processing import review_store
 from cardguard.payment_processing.errors import ProcessorReject
 from cardguard.specialists import live as spec_live
 
@@ -47,6 +48,11 @@ CHECKOUT_RATE_PER_MINUTE = int(os.environ.get("CHECKOUT_RATE_PER_MINUTE", "30"))
 # Demo controls let the page choose the buyer's country, the hour, and the model-driven agent mode.
 # In production these are derived server-side (IP geolocation, the clock) and the agent mode is off.
 DEMO_CONTROLS = os.environ.get("DEMO_CONTROLS", "0") == "1"
+# A soft decline (no hard flag) is a second look, not a final refusal: a human can confirm or overturn it.
+SECOND_LOOK_ON_DECLINE = os.environ.get("SECOND_LOOK_ON_DECLINE", "1") != "0"
+TWO_REVIEWER_ABOVE_CENTS = int(os.environ.get("TWO_REVIEWER_ABOVE_CENTS", "0"))  # 0 = off; above it an approval needs two reviewers
+LABELS_FILE = os.environ.get("LABELS_FILE", str(ROOT / ".demo" / "labels.jsonl"))
+REVIEW_AUDIT_FILE = os.environ.get("REVIEW_AUDIT_FILE", str(ROOT / ".demo" / "review_audit.jsonl"))
 ALLOWED_HOSTS = {h.strip() for h in os.environ.get("MERCHANT_HOSTS", "127.0.0.1:4242,localhost:4242,127.0.0.1,localhost").split(",")}
 
 # The processor: Stripe in TEST mode (live keys are refused). Tests inject one with a faked SDK.
@@ -209,7 +215,9 @@ ledger = MerchantLedger()
 pending: dict[str, dict] = {}       # review id -> {verification_id, amount, facts, verdict}; vid stays here
 pending_decisions: dict[str, dict] = {}  # decision id -> {payload, note, facts}: what the merchant agent may disclose
 alerts: dict[str, dict] = {}             # card reference -> network alert from the coordinator
-labels: list[tuple[list[float], int]] = []  # (local features, 0/1) from human reviews and chargebacks; never leave the node
+label_store = review_store.LabelStore(LABELS_FILE, len(fl.FEATURES))
+labels: list[tuple[list[float], int]] = label_store.load()  # (local features, 0/1) from human reviews and chargebacks; never leave the node
+review_audit = review_store.ReviewAudit(REVIEW_AUDIT_FILE)
 payments: dict[str, dict] = {}           # auth code -> {amount, features, store, t, disputed}: recent approved payments
 registry = None                          # federation node registry (cardguard.training.retrain.Registry), lazy
 retrain_log: list[dict] = []
@@ -298,10 +306,16 @@ def _prune_state(now: float, max_payments: int = 500) -> None:
     for rid in [k for k, v in pending.items() if now - v.get("t", now) > 3600]:  # unreviewed for an hour: void
         item = pending.pop(rid)
         settle(item["vid"], item["amount"], approve=False)
+        review_audit.record(review_store.expiry_entry(rid, item, now))
     for did in [k for k, v in pending_decisions.items() if now - v.get("t", now) > 600]:
         pending_decisions.pop(did, None)
     del labels[:-2000]
     del retrain_log[:-100]
+
+
+def add_label(features, label: int, source: str, reason, decision_id, now: float) -> None:
+    labels.append((features, label))
+    label_store.append(features, label, source, reason, decision_id, now)
 
 
 def settle(vid: str, amount_cents: int, approve: bool) -> dict:
@@ -492,22 +506,36 @@ def checkout():
         payment = settle(vid, amount, True)
         if payment.get("status") == "succeeded":
             payments[payment["auth_code"]] = {"amount": amount, "features": local_features, "store": store,
-                                              "facts": verdict.get("facts", facts), "t": time.time(), "disputed": False}
+                                              "facts": verdict.get("facts", facts), "t": time.time(), "disputed": False,
+                                              "decision_id": decision_id}
         return jsonify({"outcome": "approved", "verdict": verdict, "payment": payment, **extra})
-    if verdict["decision"] == "step_up":
+    suspected = ("step_up" if verdict["decision"] == "step_up" else
+                 "soft_decline" if verdict["decision"] == "decline" and not verdict.get("hard") and SECOND_LOOK_ON_DECLINE else None)
+    if suspected:  # hard declines never get here: they stay final and are never queued
         rid = secrets.token_hex(4)
         pending[rid] = {"vid": vid, "amount": amount, "facts": verdict.get("facts", facts), "verdict": verdict,
-                        "features": local_features, "store": store, "t": time.time()}
-        return jsonify({"outcome": "needs_review", "review_id": rid, "verdict": verdict, **extra})
+                        "features": local_features, "store": store, "t": time.time(), "decision_id": decision_id,
+                        "kind": suspected, "cites": list(verdict.get("cites", []))}
+        return jsonify({"outcome": "needs_review", "review_id": rid, "suspected": suspected, "verdict": verdict, **extra})
     settle(vid, amount, approve=False)
     return jsonify({"outcome": "declined", "verdict": verdict, "charged": False, **extra})
 
 
 @app.get("/reviews")
 def reviews():
-    return jsonify([{"id": k, "amount": v["amount"], "facts": public_fields(v["facts"]),
+    return jsonify([{"id": k, "amount": v["amount"], "facts": public_fields(v["facts"]), "suspected": v.get("kind"),
+                     "awaiting_second": bool(v.get("first_approval")),
                      "verdict": {**v["verdict"], "facts": public_fields(v["verdict"].get("facts", {}))}}
                     for k, v in pending.items()])  # the verification id stays on the node
+
+
+@app.get("/review-stats")
+def review_stats():
+    if (denied := reviewer_only()) is not None:
+        return denied
+    return jsonify({**review_store.stats(review_audit.entries, pending, time.time()),
+                    "reasons": list(review_store.REASONS), "audit_chain_ok": review_audit.verify(),
+                    "audit_head": audit.head(review_audit.entries), "audit_load_error": review_audit.load_error})
 
 
 @app.post("/reviews/<rid>/<action>")
@@ -516,15 +544,37 @@ def review(rid, action):
         return denied
     if action not in {"approve", "decline"}:
         return jsonify({"error": "action must be approve or decline"}), 400
-    item = pending.pop(rid, None)
+    body = request.get_json(silent=True) if request.get_data() else None
+    if body is None and request.get_data():
+        return jsonify({"error": "body must be a JSON object"}), 400
+    op, err = review_store.parse_opinion(body, request.headers.get("X-Reviewer-Id"))
+    if err:  # nothing changes on a bad opinion; the note stays on this node either way
+        return jsonify({"error": err}), 400
+    item = pending.get(rid)
     if not item:
         return jsonify({"error": "unknown review"}), 404
-    labels.append((item["features"], 0 if action == "approve" else 1))  # the human just taught the model
+    now, first_reviewer = time.time(), None
+    if action == "approve" and TWO_REVIEWER_ABOVE_CENTS and item["amount"] > TWO_REVIEWER_ABOVE_CENTS:
+        if op["reviewer"] is None:
+            return jsonify({"error": "X-Reviewer-Id required: this amount needs two reviewers"}), 400
+        first = item.get("first_approval")
+        if first is None:  # declining is the safe direction and needs one reviewer; approving needs two
+            item["first_approval"] = {"reviewer": op["reviewer"]}
+            review_audit.record(review_store.opinion_entry(rid, item, action, "awaiting_second", op, now))
+            return jsonify({"outcome": "awaiting_second", "first_reviewer": op["reviewer"]}), 202
+        if first["reviewer"] == op["reviewer"]:
+            return jsonify({"error": "a different reviewer must give the second approval"}), 409
+        first_reviewer = first["reviewer"]
+    pending.pop(rid)
+    add_label(item["features"], 0 if action == "approve" else 1, "review", op["reason"], item.get("decision_id"), now)  # the human just taught the model
+    review_audit.record(review_store.opinion_entry(rid, item, action, "approved" if action == "approve" else "declined",
+                                                   op, now, first_reviewer))
     if action == "approve":
         payment = settle(item["vid"], item["amount"], True)
         if payment.get("status") == "succeeded":
             payments[payment["auth_code"]] = {"amount": item["amount"], "features": item["features"], "store": item["store"],
-                                              "facts": item["facts"], "t": time.time(), "disputed": False}
+                                              "facts": item["facts"], "t": time.time(), "disputed": False,
+                                              "decision_id": item.get("decision_id")}
         return jsonify({"outcome": "approved_by_human", "payment": payment, "labels": len(labels)})
     return jsonify({"outcome": "declined_by_human", "payment": settle(item["vid"], item["amount"], False),
                     "charged": False, "labels": len(labels)})
@@ -545,7 +595,7 @@ def dispute(auth_code):
     if p is None or p["disputed"]:
         return jsonify({"error": "unknown or already disputed payment"}), 404
     p["disputed"] = True
-    labels.append((p["features"], 1))
+    add_label(p["features"], 1, "chargeback", None, p.get("decision_id"), time.time())
     return jsonify({"disputed": auth_code, "labels": len(labels)})
 
 
