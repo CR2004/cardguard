@@ -34,6 +34,7 @@ merchant startup; UI polish (the new review panel has not been opened in a brows
   gain (0.866) needs columns the dataset's processor engineered.
 - *Human in the loop.* Soft declines get a second look; a human's opinion has a reason from a fixed list, is
   audited in a hash-chained log, and becomes a saved training label.
+- Scoreboard of what is live and what is only measured: [Scoreboard](#scoreboard-what-runs-today-and-what-is-only-measured).
 - Details, the live wiring and the plan: [Fraud specialists](#fraud-specialists-experiment-branch-specialists-experiment).
   A plain-words before-and-after guide for the team: [OLD_VS_NEW.md](OLD_VS_NEW.md).
 
@@ -145,6 +146,9 @@ merchant can compute at checkout, AUC on each merchant's own later transactions:
 | H (30k) | 0.584 | 0.527 | 0.591 |
 | S (8k) | 0.305 | 0.385 | 0.314 |
 
+**Live today:** the *Plain FedAvg* column, the shipped `fl_weights.json`. The last column is measured but not yet
+shipped (personalisation at startup is on the Left list); a node reaches it only after a human-triggered retrain.
+
 Plain FedAvg hurts large verticals (one linear model cannot fit five fraud mixes); training locally
 from the federated start removes the loss. Federation pays for small merchants: at 250 rows per
 merchant (11 fraud cases), the mean AUC goes from 0.564 alone to 0.587 federated and the worst
@@ -165,6 +169,25 @@ results and the caveats are in [Fraud specialists](#fraud-specialists-experiment
 **Status: the live-computable slice is wired into the merchant node (see "What is wired into the live node");
 everything measured with dataset-only columns is an offline experiment. The rest of the live pipeline
 (`fl.FEATURES`, `fl_weights.json`, `BAND_CUTS`) is unchanged.**
+
+### Scoreboard: what runs today, and what is only measured
+
+AUC and "top-5% catch" (share of all fraud that lands in the top 5% of scores) on the held-out last 20% of the
+IEEE-CIS window. **Rows marked LIVE are what the merchant node uses now.** Everything else is measured only.
+
+| Model | What it is | Inputs | Test AUC | Top-5% catch | In the live system? |
+|---|---|---|---|---|---|
+| Original federated model | one logistic model, FedAvg across the 5 merchants (Flower); sends `model_risk_band` | 9 checkout features | about 0.77 | about 22% | **LIVE** (unchanged) |
+| **Specialist stack, FedAvg + fine-tune** | four one-family models, averaged across merchants then fine-tuned per merchant, stacked; sends `specialist_stack_band` | 16 live-computable features | **0.774** (0.708 as the 3-level band that is sent) | **25%** | **LIVE (new)**, from `specialist_weights.json` |
+| Specialist stack, plain FedAvg | the same without the local fine-tune | same 16 | 0.776 (0.716 as a band) | 19% | not live: `export --mode federated` |
+| Specialists, each merchant alone | no averaging | same 16 | 0.744 (bands) | 21% | not live |
+| Specialists, all rows pooled | needs every merchant's rows in one place | same 16 | 0.750 (bands) | 27% | not live: reference only, breaks the privacy rule |
+| Specialist stack, all dataset columns | LightGBM specialists on the dataset's engineered columns | 125 derived features | 0.866 | 50% | not live: needs columns our checkout does not collect |
+
+How to read it: the live specialist stack is level with the original model on accuracy (both about 0.77). What it
+adds is per-family bands a reviewer can read, a per-merchant fine-tune, and the plumbing for richer signals. The
+0.866 row shows what richer inputs could reach, not what runs today. The 3-level band is coarser than the score,
+which is why its AUC is lower (0.708); that is the version the coordinator actually receives.
 
 ### The idea
 Today's federation is *horizontal*: every merchant has the same 9 features on different transactions, and
@@ -328,7 +351,7 @@ stacked there):
 | central (pooled) | 0.750 | 27% | 0.685 | 0.505 | 0.651 | 0.390 | 0.578 |
 | local (alone) | 0.744 | 21% | 0.669 | 0.504 | 0.622 | 0.502 | 0.653 |
 | **federated (FedAvg)** | **0.776** | **19%** | **0.734** | **0.606** | **0.599** | **0.344** | **0.621** |
-| **personalised (FedAvg + fine-tune)** | **0.774** | **25%** | **0.717** | **0.548** | **0.623** | **0.525** | **0.647** |
+| **personalised (FedAvg + fine-tune)  <- LIVE** | **0.774** | **25%** | **0.717** | **0.548** | **0.623** | **0.525** | **0.647** |
 
 Stacks of bands only with all dataset columns: central 0.815, local 0.830, federated 0.829, personalised 0.819.
 
