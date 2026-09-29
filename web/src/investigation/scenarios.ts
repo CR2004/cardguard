@@ -3,7 +3,7 @@
 // holds it. The hints name Stripe's published TEST card numbers, which are not cardholder data.
 
 export interface Scenario {
-  id: 'normal' | 'collaborative' | 'fraud' | 'rogue';
+  id: 'normal' | 'collaborative' | 'fraud' | 'rogue' | 'ring';
   title: string;
   story: string;
   watch: string;
@@ -11,6 +11,7 @@ export interface Scenario {
   amountCents: number;
   buyerCountry: string;
   attack: '' | 'leak';
+  ring?: boolean; // the same card at every store of this node, one checkout after another
 }
 
 export const SCENARIOS: Scenario[] = [
@@ -46,7 +47,22 @@ export const SCENARIOS: Scenario[] = [
     testCard: 'Stripe test Visa 4242 4242 4242 4242',
     amountCents: 2400, buyerCountry: 'US', attack: 'leak',
   },
+  {
+    id: 'ring',
+    title: 'Card-testing ring',
+    story: 'One card buys $24 at three different stores within a minute.',
+    watch: 'Each store alone sees one ordinary purchase. The coordinator\'s network memory sees the same card reference at one, two, then three merchants: low, medium, high. The third checkout is held for a person and every store that saw the card is alerted.',
+    testCard: 'Stripe test Visa 4242 4242 4242 4242',
+    amountCents: 2400, buyerCountry: 'US', attack: '', ring: true,
+  },
 ];
+
+/** What one checkout of the ring scenario came back with: shown while the next store runs. */
+export interface RingStep {
+  store: string;
+  outcome: string;
+  band: string | null;
+}
 
 export const COUNTRIES: { code: string; name: string }[] = [
   { code: 'US', name: 'United States' }, { code: 'CA', name: 'Canada' }, { code: 'DE', name: 'Germany' },

@@ -13,7 +13,7 @@ import { PhaseHeader } from './components/PhaseHeader';
 import { TopBar } from './components/TopBar';
 import { TraceTimeline } from './components/TraceTimeline';
 import { TransactionPanel, type Inputs } from './components/TransactionPanel';
-import { SCENARIOS, type Scenario } from './investigation/scenarios';
+import { SCENARIOS, type RingStep, type Scenario } from './investigation/scenarios';
 import { useInvestigation } from './investigation/useInvestigation';
 
 const first = SCENARIOS[0];
@@ -29,6 +29,7 @@ export function App() {
   const [inputs, setInputs] = useState<Inputs>(DEFAULT_INPUTS);
   const [drawer, setDrawer] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  const [ring, setRing] = useState<RingStep[] | null>(null);
   const stripeCard = useRef<StripeCardHandle>(null);
   const reduced = useReducedMotion() ?? false;
   const inv = useInvestigation(config);
@@ -40,17 +41,47 @@ export function App() {
 
   const busy = state.status === 'tokenizing' || (state.status === 'running' && !inv.finished && !inv.awaitingHuman);
 
+  const getPaymentMethod = async () => {
+    if (!stripeCard.current) throw new Error('Stripe Elements is not ready.');
+    return stripeCard.current.tokenize();
+  };
+
   function start(next: Inputs) {
     if (!config) return;
     setNotice(null);
-    const getPaymentMethod = async () => {
-      if (!stripeCard.current) throw new Error('Stripe Elements is not ready.');
-      return stripeCard.current.tokenize();
-    };
+    setRing(null);
     void inv.run({
       amount_cents: next.amountCents, buyer_country: next.buyerCountry, store: next.store || undefined,
       attack: next.attack || null, model_agent: next.modelAgent, gift_message: next.gift,
     }, getPaymentMethod);
+  }
+
+  // The ring: the same card (Stripe tokenizes it afresh each time) at every store of this node, one real
+  // checkout after another, the way a card-testing ring keeps going. A held checkout stays in the review
+  // queue and the ring moves on; a decline or a block ends it. Earlier checkouts are shown at a glance;
+  // the last one plays in full.
+  async function startRing(next: Inputs) {
+    if (!config) return;
+    setNotice(null);
+    const steps: RingStep[] = [];
+    setRing(steps);
+    const stores = config.stores;
+    for (const [i, store] of stores.entries()) {
+      const result = await inv.run({
+        amount_cents: next.amountCents, buyer_country: next.buyerCountry, store,
+        attack: null, model_agent: false, gift_message: '',
+      }, getPaymentMethod);
+      const outcome = result?.outcome ?? 'error';
+      steps.push({ store, outcome, band: result?.verdict?.network?.band ?? null });
+      const stop = !result || !(outcome === 'approved' || outcome === 'needs_review');
+      if (stop || i === stores.length - 1) {
+        for (const rest of stores.slice(i + 1)) steps.push({ store: rest, outcome: 'not_reached', band: null });
+        setRing([...steps]);
+        return;
+      }
+      setRing([...steps]);
+      inv.skip();
+    }
   }
 
   function onScenario(s: Scenario) {
@@ -58,9 +89,14 @@ export function App() {
       modelAgent: false };
     setScenario(s.id);
     setInputs(next);
+    if (s.ring && config && config.stores.length < 3) {
+      setNotice('This scenario needs three stores on the node: start it with python run_demo.py --stores store-a,store-b,store-c.');
+      return;
+    }
     // The card is typed into Stripe's own field; once it is complete a scenario runs in one click.
-    if (stripeCard.current?.isComplete()) start(next);
-    else setNotice(`Type the ${s.testCard} into the Stripe field, then press Pay.`);
+    if (!stripeCard.current?.isComplete()) setNotice(`Type the ${s.testCard} into the Stripe field, then press Pay.`);
+    else if (s.ring) void startRing(next);
+    else start(next);
   }
 
   if (!config) {
@@ -101,11 +137,12 @@ export function App() {
           inputs={inputs}
           onScenario={onScenario}
           onInputs={(patch) => setInputs((cur) => ({ ...cur, ...patch }))}
-          onRun={() => start(inputs)}
+          onRun={() => (scenario === 'ring' ? void startRing(inputs) : start(inputs))}
           busy={busy}
           tokenizing={state.status === 'tokenizing'}
           received={state.ciphertext}
           error={state.error ?? notice}
+          ring={ring}
           stripeCard={stripeCard}
         />
         <main className="stage-wrap" aria-label="Investigation graph">

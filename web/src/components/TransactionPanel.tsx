@@ -1,9 +1,9 @@
 import type { RefObject } from 'react';
-import { Bug, CircleCheck, Play, ShieldX, SlidersHorizontal, Split } from 'lucide-react';
+import { Bug, CircleCheck, Network, Play, ShieldX, SlidersHorizontal, Split } from 'lucide-react';
 import type { Config } from '../api/types';
 import { StripeCard, type StripeCardHandle } from '../card/StripeCard';
 import { formatMoney } from '../format';
-import { ATTACKS, COUNTRIES, SCENARIOS, type Scenario } from '../investigation/scenarios';
+import { ATTACKS, COUNTRIES, SCENARIOS, type RingStep, type Scenario } from '../investigation/scenarios';
 import { Guilloche } from './Guilloche';
 
 export interface Inputs {
@@ -15,7 +15,10 @@ export interface Inputs {
   store: string;
 }
 
-const ICONS: Record<Scenario['id'], typeof Play> = { normal: CircleCheck, collaborative: Split, fraud: ShieldX, rogue: Bug };
+const ICONS: Record<Scenario['id'], typeof Play> = { normal: CircleCheck, collaborative: Split, fraud: ShieldX, rogue: Bug, ring: Network };
+const OUTCOME_WORD: Record<string, string> = {
+  approved: 'approved', needs_review: 'held for a person', declined: 'declined', blocked: 'blocked', not_reached: 'not reached', error: 'failed',
+};
 
 interface Props {
   config: Config;
@@ -28,11 +31,12 @@ interface Props {
   tokenizing: boolean;
   received: string | null;
   error: string | null;
+  ring: RingStep[] | null;
   stripeCard: RefObject<StripeCardHandle | null>;
 }
 
 export function TransactionPanel({ config, scenario, inputs, onScenario, onInputs, onRun, busy, tokenizing, received, error,
-  stripeCard }: Props) {
+  ring, stripeCard }: Props) {
   const country = COUNTRIES.find((c) => c.code === inputs.buyerCountry)?.name ?? inputs.buyerCountry;
   const chosen = SCENARIOS.find((s) => s.id === scenario);
   return (
@@ -76,6 +80,20 @@ export function TransactionPanel({ config, scenario, inputs, onScenario, onInput
           <Play size={15} aria-hidden /> {tokenizing ? 'Stripe is tokenizing…' : busy ? 'Investigating…' : `Pay ${formatMoney(inputs.amountCents)}`}
         </button>
         {error && <div className="error-note" role="alert" style={{ marginTop: 8 }}>{error}</div>}
+        {ring && (
+          <ol className="ring-log" aria-label="Ring progress">
+            {config.stores.map((store, i) => {
+              const step = ring[i];
+              return (
+                <li key={store} data-state={step ? step.outcome : 'pending'}>
+                  <span>{store}</span>
+                  <b>{step ? (OUTCOME_WORD[step.outcome] ?? step.outcome) : i === ring.length ? 'checking out…' : 'waiting'}</b>
+                  <small>{step?.band ? `network ${step.band}` : ''}</small>
+                </li>
+              );
+            })}
+          </ol>
+        )}
       </div>
 
       <div>

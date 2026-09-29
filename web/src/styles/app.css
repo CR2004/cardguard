@@ -187,6 +187,13 @@ button { cursor: pointer; }
 .scenario__story { color: var(--text-muted); font-size: 12px; }
 .scenario__story.is-clamped { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .scenario { padding: 8px 12px; }
+.ring-log { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; font-size: 12px; }
+.ring-log li { display: grid; grid-template-columns: 1fr auto auto; gap: 8px; align-items: baseline; color: var(--text-muted); }
+.ring-log li b { color: var(--text); font-weight: 590; }
+.ring-log li small { color: var(--text-faint); }
+.ring-log li[data-state="needs_review"] b { color: var(--review); }
+.ring-log li[data-state="declined"] b, .ring-log li[data-state="blocked"] b { color: var(--reject); }
+.scenario--ring[aria-pressed="true"] .scenario__icon { color: var(--review); }
 .scenario__watch { grid-column: 2; color: var(--text-faint); font-size: 11.5px; margin-top: 4px; }
 
 .run-btn {

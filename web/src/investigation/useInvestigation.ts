@@ -126,14 +126,14 @@ export function useInvestigation(config: Config | null) {
   );
   const gateKey = state.events.slice(0, state.applied).find((e) => e.kind === 'gate.decision')?.seq ?? -1;
 
-  const run = useCallback(async (input: RunInput, getCiphertext: () => Promise<string>) => {
+  const run = useCallback(async (input: RunInput, getCiphertext: () => Promise<string>): Promise<CheckoutResult | null> => {
     dispatch({ type: 'tokenizing' });
     let blob: string;
     try {
       blob = await getCiphertext();
     } catch (err) {
       dispatch({ type: 'error', error: err instanceof Error ? err.message : String(err) });
-      return;
+      return null;
     }
     const traceId = newTraceId();
     lastSeq.current = -1;
@@ -142,8 +142,10 @@ export function useInvestigation(config: Config | null) {
       const result = await api.checkout({ ...input, blob, trace_id: traceId });
       dispatch({ type: 'result', result });
       if (result.error) dispatch({ type: 'error', error: result.error });
+      return result;
     } catch (err) {
       dispatch({ type: 'error', error: err instanceof Error ? err.message : String(err) });
+      return null;
     }
   }, []);
 
