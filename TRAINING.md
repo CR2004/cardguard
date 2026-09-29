@@ -48,8 +48,6 @@ server: average them, weighted by how many rows each merchant has   -> new globa
 save fl_weights.json  ->  every merchant node loads it at startup
 ```
 
-Options: `FL_ROBUST=1` averages with a median so one bad node can't dominate; `FL_DP_NOISE` adds differential privacy.
-
 ## Training the specialists
 
 Same idea, with one extra step so each merchant ends up with its own version.
