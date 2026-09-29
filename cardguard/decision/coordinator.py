@@ -150,10 +150,12 @@ def _ask_jev_with_retry(facts: dict, client) -> tuple[dict | None, list[str]]:
 
 
 def _default_client():
-    if not os.environ.get("TYPESAFE_API_KEY"):
+    """Jev needs only the API key; the SDK's default endpoint and model are used unless JEV_MODEL pins one."""
+    key = os.environ.get("TYPESAFE_API_KEY")
+    if not key:
         return None
     from typesafe_sdk import TypeSafeClient
-    return TypeSafeClient(timeout=5.0)
+    return TypeSafeClient(api_key=key, model=os.environ.get("JEV_MODEL") or None, timeout=5.0)
 
 
 def decide(facts: dict, client=None) -> dict:

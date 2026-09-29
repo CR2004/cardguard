@@ -1,23 +1,17 @@
-"""End-to-end merchant flow with an in-process issuer (no network). The merchant never sees card data."""
-import os
-
+"""End-to-end merchant flow on a faked Stripe SDK (no network). The merchant never sees card data."""
 import pytest
 
 from cardguard.payment_processing import merchant
 from cardguard.decision.guard import find_leaks
-from cardguard.payment_processing.issuer import Issuer
+from tests.stripe_fake import processor
 
-VISA = ("4242424242424242", "12/30", "123")
-MASTER_DE = ("5555555555554444", "11/29", "456")
-ZERO = ("4000000000000002", "09/29", "321")
-
-
+VISA, MASTER_DE, ZERO, CVC_FAIL = "pm_visa", "pm_de", "pm_zero", "pm_cvcfail"
 REVIEWER = {"Authorization": "Bearer rev-token"}
 
 
 @pytest.fixture
 def client(monkeypatch):
-    monkeypatch.setattr(merchant, "issuer", Issuer(merchants={merchant.MERCHANT_ID: "s3cret"}))
+    monkeypatch.setattr(merchant, "processor", processor())
     monkeypatch.setattr(merchant, "REVIEWER_TOKEN", "rev-token")
     merchant._checkout_calls.clear()
     merchant.ledger = merchant.MerchantLedger()
@@ -28,23 +22,16 @@ def client(monkeypatch):
     return merchant.app.test_client()
 
 
-def blob_for(card=VISA, amount=2000, cvc=None):
-    pan, exp, real_cvc = card
-    return merchant.issuer.seal({"p": pan, "e": exp, "c": cvc or real_cvc, "a": amount,
-                                 "m": merchant.MERCHANT_ID, "n": os.urandom(12).hex(), "t": merchant.issuer.clock()})
+def buy(client, card=VISA, amount=2000, country="US", attack=None, hour=14, **extra):
+    return client.post("/checkout", json={"blob": card, "amount_cents": amount, "buyer_country": country,
+                                          "attack": attack, "hour": hour, **extra}).get_json()
 
 
-def buy(client, card=VISA, amount=2000, country="US", attack=None, hour=14, cvc=None, **extra):
-    return client.post("/checkout", json={"blob": blob_for(card, amount, cvc), "amount_cents": amount,
-                                          "buyer_country": country, "attack": attack, "hour": hour,
-                                          **extra}).get_json()
-
-
-def test_normal_purchase_is_verified_decided_and_authorized(client):
+def test_normal_purchase_is_verified_decided_and_confirmed(client):
     res = buy(client)
     assert res["outcome"] == "approved"
-    assert res["payment"]["status"] == "succeeded" and "auth_code" in res["payment"]
-    assert merchant.issuer.audit[-1]["event"] == "authorize"
+    assert res["payment"]["status"] == "succeeded" and res["payment"]["auth_code"].startswith("pi_test_")
+    assert merchant.processor.audit[-1]["event"] == "authorize"
 
 
 def test_risky_purchase_goes_to_human_and_decline_voids(client):
@@ -53,25 +40,32 @@ def test_risky_purchase_goes_to_human_and_decline_voids(client):
     rid = res["review_id"]
     listed = client.get("/reviews").get_json()[0]
     assert listed["id"] == rid and "vid" not in listed and "ver_" not in str(listed)
+    assert client.post(f"/reviews/{rid}/decline").status_code == 401             # reviewer only
     out = client.post(f"/reviews/{rid}/decline", headers=REVIEWER).get_json()
     assert out["outcome"] == "declined_by_human" and out["payment"]["status"] == "voided"
 
 
-def test_human_approval_authorizes(client):
+def test_human_approval_confirms(client):
     rid = buy(client, card=MASTER_DE, amount=90000)["review_id"]
     assert client.post(f"/reviews/{rid}/approve").status_code == 401           # no token: no money moves
     assert client.post(f"/reviews/{rid}/approve", headers=REVIEWER).get_json()["payment"]["status"] == "succeeded"
 
 
 def test_cvc_failure_is_a_hard_decline_and_voids(client):
-    res = buy(client, cvc="999")
+    res = buy(client, card=CVC_FAIL)
     assert res["outcome"] == "declined" and res["verdict"]["cites"] == ["cvc_check=fail"]
-    assert merchant.issuer.audit[-1]["event"] == "void"
+    assert merchant.processor.audit[-1]["event"] == "void"
 
 
-def test_issuer_decline_after_agents_approve(client):
+def test_bank_decline_after_agents_approve(client):
     res = buy(client, card=ZERO)
-    assert res["outcome"] == "approved" and res["payment"]["status"] == "issuer_declined"
+    assert res["outcome"] == "approved" and res["payment"]["status"] == "processor_declined"
+
+
+def test_unknown_payment_method_is_refused_before_any_agent(client):
+    res = buy(client, card="pm_nope")
+    assert res["outcome"] == "processor_rejected" and client.get("/ledger").get_json()["entries"] == []
+    assert buy(client, card="4242424242424242")["outcome"] == "processor_rejected"   # a card number is not a token
 
 
 def test_attack_leak_blocked_and_nothing_leaks(client):
@@ -80,26 +74,14 @@ def test_attack_leak_blocked_and_nothing_leaks(client):
     led = client.get("/ledger").get_json()
     assert all(e["status"] == "BLOCKED" for e in led["entries"])
     assert led["card_numbers_seen_by_coordinator"] == 0
-    assert merchant.issuer.audit[-1]["event"] == "void"
+    assert merchant.processor.audit[-1]["event"] == "void"
 
 
-def test_attack_tamper_rejected_by_issuer(client):
-    res = buy(client, attack="tamper")
-    assert res["outcome"] == "issuer_rejected" and "amount" in res["reason"] and res["charged"] is False
-    assert client.get("/ledger").get_json()["entries"] == []   # never reached the wire
-
-
-def test_attack_replay_rejected_by_issuer(client):
-    res = buy(client, attack="replay")
-    assert res["outcome"] == "issuer_rejected" and "replay" in res["reason"]
-
-
-def test_ledger_never_contains_blob_card_number_or_verification_id(client):
-    blob = blob_for()
-    client.post("/checkout", json={"blob": blob, "amount_cents": 2000, "buyer_country": "US", "hour": 14})
+def test_ledger_never_contains_token_id_or_verification_id(client):
+    buy(client, card="pm_visa")
     buy(client, card=MASTER_DE, amount=90000)
     text = str(client.get("/ledger").get_json()) + str(client.get("/reviews").get_json())
-    assert blob[:24] not in text and "4242" not in text and "5555" not in text and "ver_" not in text
+    assert "pm_visa" not in text and "pm_de" not in text and "ver_" not in text and "fp_" not in text
     assert not any(find_leaks(str(v)) for e in merchant.ledger.entries for v in e.get("fields", {}).values())
 
 
@@ -127,7 +109,7 @@ def test_baseline_learns_only_from_completed_authorizations(client):
     merchant.baseline.history.clear()
     buy(client, card=MASTER_DE, amount=90000)          # needs review: not completed
     assert len(merchant.baseline.history) == 0
-    buy(client)                                         # approved and authorized
+    buy(client)                                         # approved and confirmed
     assert list(merchant.baseline.history) == [20.0]
     assert merchant.ledger.entries[-1]["note"]["band_basis"].startswith("seed_")
     assert "note" not in merchant.ledger.entries[-1]["fields"]
@@ -136,7 +118,7 @@ def test_baseline_learns_only_from_completed_authorizations(client):
 def test_card_age_and_days_since_previous_are_tracked_locally(client, monkeypatch):
     clock = [1_000_000.0]
     monkeypatch.setattr(merchant.time, "time", lambda: clock[0])
-    merchant.issuer.clock = lambda: clock[0]
+    monkeypatch.setattr(merchant, "processor", processor(clock=lambda: clock[0]))
     buy(client)
     key = next(iter(merchant.card_first_seen))
     assert key.startswith(merchant.STORES[0] + "|tok_") and merchant.card_first_seen[key] == 1_000_000.0
@@ -183,7 +165,7 @@ def test_model_agent_without_endpoint_says_so_and_voids(client, monkeypatch):
     monkeypatch.setattr(agent_llm, "compose", lambda facts, gift, client=None: None)
     res = buy(client, model_agent=True, gift_message="hi")
     assert res["outcome"] == "no_model_endpoint" and res["charged"] is False
-    assert merchant.issuer.audit[-1]["event"] == "void"
+    assert merchant.processor.audit[-1]["event"] == "void"
 
 
 def test_federation_mode_decides_over_grid_end_to_end(client, monkeypatch):
@@ -199,8 +181,7 @@ def test_federation_mode_decides_over_grid_end_to_end(client, monkeypatch):
     monkeypatch.setattr(merchant, "run_grid_decision", fake_flwr_run)
     res = buy(client, card=MASTER_DE, amount=90000)
     assert res["outcome"] == "needs_review" and res["verdict"]["decided_via"] == "flower:local-agent"
-    assert res["verdict"]["cites"] == ["amount_band=high", "country_mismatch=yes", "new_customer=yes", "model_risk_band=medium"] \
-        or "amount_band=high" in res["verdict"]["cites"]
+    assert "amount_band=high" in res["verdict"]["cites"]
     entries = client.get("/ledger").get_json()["entries"]
     assert entries[-1]["source"] == "merchant-agent" and entries[-1]["status"] == "DISCLOSED"
     assert merchant.pending_decisions == {}
@@ -242,8 +223,7 @@ def test_fraud_ring_across_three_stores_in_process(client, monkeypatch):
 
 
 def test_checkout_validates_input_and_rate_limits(client, monkeypatch):
-    bad = client.post("/checkout", json={"blob": "x", "amount_cents": "lots", "buyer_country": "US"})
-    assert bad.status_code == 400
+    assert client.post("/checkout", json={"blob": "x", "amount_cents": "lots", "buyer_country": "US"}).status_code == 400
     assert client.post("/checkout", json={"blob": "x", "amount_cents": 0}).status_code == 400
     assert client.post("/checkout", json={"blob": "x", "amount_cents": 10**9}).status_code == 400
     assert client.post("/checkout", json={"blob": "x" * 5000, "amount_cents": 100}).status_code == 400
@@ -284,32 +264,3 @@ def test_ledger_is_hash_chained_and_tamper_evident(client):
     merchant.ledger.entries[0]["fields"]["amount_band"] = "high"   # edit history
     ok, bad = merchant.ledger.verify_chain()
     assert not ok and bad == 0
-
-
-def test_http_issuer_client_maps_rejections(monkeypatch):
-    from cardguard.payment_processing import issuer as issuer_mod
-    fresh = Issuer(merchants={merchant.MERCHANT_ID: "s3cret"})
-    monkeypatch.setattr(issuer_mod, "issuer", fresh)
-    flask_client = issuer_mod.app.test_client()
-
-    class FakeUrlopen:  # route urllib through Flask's test client, headers included
-        def __init__(self, req, timeout=None, context=None):
-            self.res = flask_client.post(req.full_url.replace("http://issuer.test", ""), data=req.data,
-                                         headers=dict(req.header_items()))
-            if self.res.status_code >= 400:
-                import urllib.error
-                raise urllib.error.HTTPError(req.full_url, self.res.status_code, "err", {}, __import__("io").BytesIO(self.res.data))
-        def __enter__(self): return self
-        def __exit__(self, *a): pass
-        def read(self): return self.res.data
-    import urllib.request
-    monkeypatch.setattr(urllib.request, "urlopen", FakeUrlopen)
-    http = merchant.HttpIssuer("http://issuer.test", "s3cret")
-    blob = fresh.seal({"p": VISA[0], "e": VISA[1], "c": VISA[2], "a": 2000, "m": merchant.MERCHANT_ID, "n": os.urandom(12).hex(), "t": fresh.clock()})
-    out = http.verify(blob, 2000, merchant.MERCHANT_ID)
-    assert out["cvc_check"] == "pass"
-    with pytest.raises(merchant.IssuerReject, match="replay"):
-        http.verify(blob, 2000, merchant.MERCHANT_ID)
-    assert http.authorize(out["verification_id"], merchant.MERCHANT_ID)["status"] == "succeeded"
-    with pytest.raises(merchant.IssuerReject, match="unauthenticated"):
-        merchant.HttpIssuer("http://issuer.test", "wrong").verify(blob, 2000, merchant.MERCHANT_ID)

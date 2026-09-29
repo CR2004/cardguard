@@ -1,5 +1,5 @@
-"""Exceptions shared by the merchant node and every processor, so importing one never imports the other."""
+"""Exceptions shared by the merchant node and the processor adapter."""
 
 
-class IssuerReject(Exception):
-    """Verification or authorization refused; str(e) is the reason (never card data)."""
+class ProcessorReject(Exception):
+    """Verification or authorization refused by the processor; str(e) is the reason (never card data)."""

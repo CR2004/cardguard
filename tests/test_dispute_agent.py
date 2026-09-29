@@ -31,7 +31,7 @@ class FakeLLM:
 def test_evidence_is_banded_facts_and_events_only():
     ev = da.assemble_evidence("AUTHXX", PAY, LEDGER, AUDIT)
     assert ev["facts_at_decision"] == {"amount_band": "low", "country_mismatch": "no", "cvc_check": "pass", "network_velocity_band": "low"}
-    assert "token" not in ev["facts_at_decision"] and [e["event"] for e in ev["issuer_events"]] == ["verify", "authorize"]
+    assert "token" not in ev["facts_at_decision"] and [e["event"] for e in ev["processor_events"]] == ["verify", "authorize"]
     assert ev["checks"]["security_code"] == "pass" and ev["checks"]["billing_country_matched_buyer"]
     assert ev["checks"]["ledger_chain_intact"]
     assert not any(find_leaks(v) for v in json_values(ev))
@@ -59,9 +59,9 @@ def test_draft_template_and_model_paths():
 
 def test_merchant_endpoint(monkeypatch):
     from cardguard.payment_processing import merchant
-    from cardguard.payment_processing.issuer import Issuer
+    from tests.stripe_fake import processor
     from tests.test_merchant import buy
-    monkeypatch.setattr(merchant, "issuer", Issuer(merchants={merchant.MERCHANT_ID: "s"}))
+    monkeypatch.setattr(merchant, "processor", processor())
     monkeypatch.setattr(merchant, "REVIEWER_TOKEN", "rev-token"); H = {"Authorization": "Bearer rev-token"}
     merchant.ledger = merchant.MerchantLedger(); merchant.pending.clear(); merchant.seen.clear(); merchant.payments.clear(); merchant.labels.clear(); merchant._checkout_calls.clear()
     c = merchant.app.test_client()

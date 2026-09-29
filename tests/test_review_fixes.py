@@ -1,49 +1,26 @@
 """Regression tests for the code-review findings."""
-import subprocess
-import sys
 
 import numpy as np
-import pytest
 
 from cardguard.decision import llm
 from cardguard.payment_processing import merchant
-from cardguard.payment_processing.errors import IssuerReject
-from cardguard.payment_processing.issuer import Issuer
 from tests.test_merchant import MASTER_DE, buy
+from tests.stripe_fake import processor
 
 
-def test_merchant_process_never_loads_the_issuer_module():
-    """The merchant must not import the issuer (whose module builds the key-holding Issuer)."""
-    code = ("import sys; from cardguard.payment_processing import merchant, stripe_processor; "
-            "print('cardguard.payment_processing.issuer' in sys.modules)")
-    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True,
-                         env={"PATH": "", "STRIPE_SECRET_KEY": "", "PYTHONPATH": "."}).stdout.strip()
-    assert out == "False"
 
-
-def test_issuer_is_built_lazily_and_never_on_import():
-    from cardguard.payment_processing import issuer as issuer_mod
-    assert issuer_mod.issuer is None or isinstance(issuer_mod.issuer, Issuer)   # tests may have injected one
-
-
-def test_issuer_outage_is_a_refusal_not_a_500(monkeypatch):
-    http = merchant.HttpIssuer("http://127.0.0.1:1", "s")
-    with pytest.raises(IssuerReject, match="unreachable"):
-        http.verify("blob", 2000, "m")
-    assert http.audit[-1]["status"] == "rejected"
-
-
-def test_replay_attack_voids_the_verification_it_opened(monkeypatch):
-    node = Issuer(merchants={merchant.MERCHANT_ID: "s"})
-    monkeypatch.setattr(merchant, "issuer", node)
+def test_processor_outage_is_a_refusal_not_a_500(monkeypatch):
+    from tests.stripe_fake import processor
+    monkeypatch.setattr(merchant, "processor", processor(broken=True))
     merchant.ledger = merchant.MerchantLedger(); merchant.seen.clear(); merchant._checkout_calls.clear()
     c = merchant.app.test_client()
-    res = buy(c, attack="replay")
-    assert res["outcome"] == "issuer_rejected" and node.audit[-1]["event"] == "void"
+    res = buy(c)
+    assert res["outcome"] == "processor_rejected" and res["charged"] is False
+    assert merchant.processor.audit[-1]["status"] == "rejected"
 
 
 def test_review_rejects_unknown_actions(monkeypatch):
-    monkeypatch.setattr(merchant, "issuer", Issuer(merchants={merchant.MERCHANT_ID: "s"}))
+    monkeypatch.setattr(merchant, "processor", processor())
     monkeypatch.setattr(merchant, "REVIEWER_TOKEN", "rev-token"); H = {"Authorization": "Bearer rev-token"}
     merchant.ledger = merchant.MerchantLedger(); merchant.pending.clear(); merchant.seen.clear(); merchant.labels.clear(); merchant._checkout_calls.clear()
     c = merchant.app.test_client()
@@ -53,8 +30,8 @@ def test_review_rejects_unknown_actions(monkeypatch):
 
 
 def test_token_rate_limit_after_verify_voids_and_blocks(monkeypatch):
-    node = Issuer(merchants={merchant.MERCHANT_ID: "s"})
-    monkeypatch.setattr(merchant, "issuer", node)
+    node = processor()
+    monkeypatch.setattr(merchant, "processor", node)
     merchant.ledger = merchant.MerchantLedger(); merchant.seen.clear(); merchant._checkout_calls.clear()
     merchant.ledger.MAX_PER_TOKEN_PER_HOUR = 1
     c = merchant.app.test_client()
@@ -65,7 +42,7 @@ def test_token_rate_limit_after_verify_voids_and_blocks(monkeypatch):
 
 def test_retrain_is_idempotent_from_the_shipped_weights(monkeypatch):
     from tests.test_retrain import _registry_small
-    monkeypatch.setattr(merchant, "issuer", Issuer(merchants={merchant.MERCHANT_ID: "s"}))
+    monkeypatch.setattr(merchant, "processor", processor())
     monkeypatch.setattr(merchant, "registry", _registry_small())
     monkeypatch.setattr(merchant, "VERTICAL", "W")            # not a synthetic node: it still joins the round
     monkeypatch.setattr(merchant, "FL_WEIGHTS", merchant.FL_WEIGHTS.copy())
@@ -79,15 +56,15 @@ def test_retrain_is_idempotent_from_the_shipped_weights(monkeypatch):
     assert first["nodes"] == 4 and np.allclose(w1, w2)        # same labels -> same weights, no compounding
 
 
-def test_dispute_evidence_uses_the_nodes_own_issuer_log(monkeypatch):
-    node = Issuer(merchants={merchant.MERCHANT_ID: "s"})
-    monkeypatch.setattr(merchant, "issuer", node)
+def test_dispute_evidence_uses_the_nodes_own_processor_log(monkeypatch):
+    node = processor()
+    monkeypatch.setattr(merchant, "processor", node)
     monkeypatch.setattr(merchant, "REVIEWER_TOKEN", "rev-token"); H = {"Authorization": "Bearer rev-token"}
     merchant.ledger = merchant.MerchantLedger(); merchant.seen.clear(); merchant.payments.clear(); merchant.labels.clear(); merchant._checkout_calls.clear()
     c = merchant.app.test_client()
     code = buy(c)["payment"]["auth_code"]; c.post(f"/payments/{code}/dispute", headers=H)
     ev = c.get(f"/payments/{code}/evidence", headers=H).get_json()["evidence"]
-    assert [e["event"] for e in ev["issuer_events"]] == ["verify", "authorize"]
+    assert [e["event"] for e in ev["processor_events"]] == ["verify", "authorize"]
     assert ev["facts_at_decision"]["network_velocity_band"] == "low" and ev["checks"]["ledger_chain_intact"]
 
 

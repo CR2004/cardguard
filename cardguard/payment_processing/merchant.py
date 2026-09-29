@@ -1,25 +1,22 @@
-"""Merchant node: never sees card details. It forwards a sealed blob to the issuer, unread.
+"""Merchant node: never sees card details.
 
 Flow per purchase:
-  checkout page -> issuer card frame seals {card, amount, merchant, nonce, ts} -> blob
-  merchant node -> forwards the blob unread to the issuer's /verify
-  issuer        -> {verification_id, card_ref, country, funding, cvc_check}   [no card data]
+  checkout page -> Stripe Elements sends the card to Stripe; the store receives a payment-method id
+  merchant node -> asks Stripe (test mode) for card facts by that id
+  processor     -> {verification_id, card_ref, country, funding, cvc_check}   [no card data]
   merchant node -> derives banded facts -> Ledger.disclose() (wire guard)
   coordinator   -> approve / step_up / decline                                 [banded facts only]
-  merchant node -> approve: issuer authorize; step_up: human queue; decline: issuer void
+  merchant node -> approve: confirm a TEST-mode PaymentIntent; step_up: human queue; decline: void
 
-Invariant: the blob is forwarded unread and never logged; the ledger never holds the blob, a card
-number, or a verification id.
+Invariant: the ledger never holds a payment-method id, a card number, or a verification id.
 """
 from __future__ import annotations
 
 import collections
-import hashlib
 import hmac
 import json
 import os
 import secrets
-import ssl
 import time
 
 from flask import Flask, jsonify, request, send_from_directory
@@ -34,86 +31,27 @@ from cardguard import ROOT
 from cardguard.decision import audit
 from cardguard.decision import network as net
 from cardguard.decision.guard import Ledger, WireViolation, strip_for_wire
-from cardguard.httpjson import HttpFailure, post_json
-from cardguard.payment_processing.errors import IssuerReject
+from cardguard.payment_processing.errors import ProcessorReject
 
 MERCHANT_ID = os.environ.get("MERCHANT_ID", "cardguard-store")
 # One merchant process can front several stores (the fraud-ring demo): each has its own id on the
-# wire and its own local velocity history; the issuer credential is shared.
+# wire and its own local velocity history; the Stripe account is shared.
 STORES = [s.strip() for s in os.environ.get("STORES", MERCHANT_ID).split(",") if s.strip()]
 # Flower federation to decide on ("local-agent", "supergrid", ...). Unset = decide in-process.
 FEDERATION = os.environ.get("CARDGUARD_FEDERATION", "")
 GRID_TIMEOUT = 240  # seconds to wait for the coordinator AgentApp's verdict (task budget is 300)
-MERCHANT_SECRET = os.environ.get("MERCHANT_SECRET", "")   # credential the issuer gave this merchant
 REVIEWER_TOKEN = os.environ.get("REVIEWER_TOKEN", "")     # the human reviewer's credential (review, dispute, retrain, join)
+MAX_AMOUNT_CENTS = 10_000_000                             # $100,000: anything above is not a checkout
+CHECKOUT_RATE_PER_MINUTE = int(os.environ.get("CHECKOUT_RATE_PER_MINUTE", "30"))  # per client address
 # Demo controls let the page choose the buyer's country, the hour, and the model-driven agent mode.
 # In production these are derived server-side (IP geolocation, the clock) and the agent mode is off.
 DEMO_CONTROLS = os.environ.get("DEMO_CONTROLS", "0") == "1"
 ALLOWED_HOSTS = {h.strip() for h in os.environ.get("MERCHANT_HOSTS", "127.0.0.1:4242,localhost:4242,127.0.0.1,localhost").split(",")}
-MAX_AMOUNT_CENTS = 10_000_000                             # $100,000: anything above is not a checkout
-CHECKOUT_RATE_PER_MINUTE = int(os.environ.get("CHECKOUT_RATE_PER_MINUTE", "30"))  # per client address
-ISSUER_URL = os.environ.get("ISSUER_URL", "http://127.0.0.1:4243")
-ISSUER_CA_FILE = os.environ.get("ISSUER_CA_FILE", "")     # pin the issuer's TLS certificate (TLS mode)
 
+# The processor: Stripe in TEST mode (live keys are refused). Tests inject one with a faked SDK.
+from cardguard.payment_processing.stripe_processor import StripeProcessor  # noqa: E402
 
-def sign_request(secret: str, method: str, path: str, body: bytes, ts: int | None = None, nonce: str | None = None) -> dict:
-    """Headers for an authenticated issuer call: HMAC-SHA256 over timestamp, method, path, nonce, body."""
-    ts = ts if ts is not None else int(time.time())
-    nonce = nonce if nonce is not None else secrets.token_hex(8)
-    msg = f"{ts}\n{method}\n{path}\n{nonce}\n".encode() + body
-    return {"X-Merchant-Id": MERCHANT_ID, "X-Timestamp": str(ts), "X-Nonce": nonce,
-            "X-Signature": hmac.new(secret.encode(), msg, hashlib.sha256).hexdigest()}
-
-
-class HttpIssuer:
-    """The live issuer over HTTP(S), with signed requests. Same methods as issuer.Issuer (tests use that in-process)."""
-
-    def __init__(self, url: str, secret: str = "", ca_file: str = ""):
-        if not url.startswith(("http://", "https://")):
-            raise ValueError("ISSUER_URL must be http(s)")
-        self.url, self.secret = url, secret
-        self.ssl_context = ssl.create_default_context(cafile=ca_file) if ca_file else None
-        self.audit: list[dict] = []  # this node's own chained record of what the issuer answered (dispute evidence)
-
-    def _post(self, path: str, body: dict | None = None) -> dict:
-        data = json.dumps(body or {}).encode()
-        try:
-            return post_json(self.url + path, body, headers=sign_request(self.secret, "POST", path, data),
-                             timeout=5, ssl_context=self.ssl_context)
-        except HttpFailure as e:  # a refusal or an outage: either way the payment does not proceed
-            raise IssuerReject(str(e)) from None
-
-    def _record(self, event: str, status: str, **extra) -> None:
-        audit.append(self.audit, {"t": time.time(), "event": event, "merchant": MERCHANT_ID, "status": status, **extra})
-
-    def verify(self, blob: str, amount_cents: int, merchant_id: str) -> dict:
-        try:
-            out = self._post("/verify", {"blob": blob, "amount_cents": amount_cents, "merchant_id": merchant_id})
-        except IssuerReject as e:
-            self._record("verify", "rejected", reason=str(e))
-            raise
-        self._record("verify", "ok", cvc_check=out.get("cvc_check", "unavailable"))
-        return out
-
-    def authorize(self, vid: str, merchant_id: str) -> dict:
-        out = self._post("/authorize", {"verification_id": vid})   # identity comes from the signature
-        self._record("authorize", out.get("status", "?"))
-        return out
-
-    def void(self, vid: str, merchant_id: str) -> dict:
-        out = self._post("/void", {"verification_id": vid})
-        self._record("void", out.get("status", "?"))
-        return out
-
-
-# Who verifies the card and moves the money: our issuer node (behind-the-scenes demo) or Stripe
-# test mode (a real processor behind the same three calls). The agents, guard and ledger do not change.
-PROCESSOR = os.environ.get("PROCESSOR", "issuer")
-if PROCESSOR == "stripe":
-    from cardguard.payment_processing.stripe_processor import StripeProcessor
-    issuer = StripeProcessor(os.environ.get("STRIPE_SECRET_KEY", ""), os.environ.get("STRIPE_PUBLISHABLE_KEY", ""))
-else:
-    issuer = HttpIssuer(ISSUER_URL, MERCHANT_SECRET, ISSUER_CA_FILE)  # tests inject an in-process issuer.Issuer()
+processor = StripeProcessor(os.environ.get("STRIPE_SECRET_KEY", ""), os.environ.get("STRIPE_PUBLISHABLE_KEY", ""))
 
 
 class MerchantLedger(Ledger):
@@ -324,9 +262,9 @@ def geolocate(addr: str | None) -> str:
     return os.environ.get("MERCHANT_COUNTRY", "US")
 
 
-def buyer_reason(e: IssuerReject, attack: str | None) -> str:
+def buyer_reason(e: ProcessorReject, attack: str | None) -> str:
     """The buyer sees a generic refusal; the exact reason (an oracle for card guessing) stays in the
-    node's logs. The demo's own attack modes show the detail, since the merchant is the attacker there."""
+    node's logs. Demo mode shows the detail."""
     if attack or DEMO_CONTROLS:
         return str(e)
     return "the card could not be verified for this payment"
@@ -362,11 +300,11 @@ def _prune_state(now: float, max_payments: int = 500) -> None:
 
 
 def settle(vid: str, amount_cents: int, approve: bool) -> dict:
-    """Authorize or void at the issuer. Only a successful authorization feeds the amount baseline."""
+    """Confirm or void at the processor. Only a successful authorization feeds the amount baseline."""
     try:
-        result = issuer.authorize(vid, MERCHANT_ID) if approve else issuer.void(vid, MERCHANT_ID)
-    except IssuerReject as e:
-        return {"status": "issuer_error", "reason": str(e)}
+        result = processor.authorize(vid, MERCHANT_ID) if approve else processor.void(vid, MERCHANT_ID)
+    except ProcessorReject as e:
+        return {"status": "processor_error", "reason": str(e)}
     if approve and result.get("status") == "succeeded":
         baseline.record_completed(amount_cents / 100)
     return result
@@ -380,9 +318,9 @@ def index():
 @app.get("/config")
 def config():
     (p10, p50, p90), basis = baseline.cuts()
-    return jsonify({"issuer_url": ISSUER_URL, "merchant_id": MERCHANT_ID, "vertical": VERTICAL,
-                    "federation": FEDERATION or None, "processor": PROCESSOR, "stores": STORES,
-                    "publishable_key": getattr(issuer, "publishable_key", None),
+    return jsonify({"merchant_id": MERCHANT_ID, "vertical": VERTICAL,
+                    "federation": FEDERATION or None, "stores": STORES,
+                    "publishable_key": processor.publishable_key,
                     "amount_cuts": {"medium_from": p50, "high_from": p90, "basis": basis}})
 
 
@@ -408,27 +346,15 @@ def checkout():
         return jsonify({"error": "unknown store"}), 400
     decision_id = secrets.token_hex(8)  # one disclosure per decision, enforced by the ledger
 
-    # --- the blob goes to the issuer unread; the issuer answers with facts only ---
+    # --- the payment-method id goes to Stripe; the processor answers with facts only ---
     try:
-        if attack in {"tamper", "replay"} and PROCESSOR != "issuer":
-            return jsonify({"outcome": "issuer_rejected", "attack": attack, "charged": False,
-                            "reason": f"the {attack} attack is only demonstrable against our issuer node; "
-                                      "Stripe binds the payment method itself"})
-        if attack == "tamper":  # compromised agent forwards 100x the amount the buyer sealed
-            issuer.verify(blob, amount * 100, MERCHANT_ID)
-        card = issuer.verify(blob, amount, MERCHANT_ID)
-    except IssuerReject as e:
-        return jsonify({"outcome": "issuer_rejected", "reason": buyer_reason(e, attack), "attack": attack, "charged": False})
+        card = processor.verify(blob, amount, MERCHANT_ID)
+    except ProcessorReject as e:
+        return jsonify({"outcome": "processor_rejected", "reason": buyer_reason(e, attack), "attack": attack, "charged": False})
     vid = card["verification_id"]
-    if attack == "replay":  # compromised agent re-sends the blob it just forwarded
-        try:
-            issuer.verify(blob, amount, MERCHANT_ID)
-        except IssuerReject as e:
-            settle(vid, amount, approve=False)  # the first verification is not left open
-            return jsonify({"outcome": "issuer_rejected", "reason": buyer_reason(e, attack), "attack": attack, "charged": False})
 
     now = time.time()
-    ref = card["card_ref"]  # letters-only keyed hash from the issuer: the wire token
+    ref = card["card_ref"]  # letters-only keyed hash of Stripe's card fingerprint: the wire token
     key = f"{store}|{ref}"  # each store only knows its own history of a card
     hits = [t for t in seen.get(key, []) if now - t < 86400]
     seen[key] = hits + [now]
@@ -616,7 +542,7 @@ def evidence(auth_code):
     p = payments.get(auth_code)
     if p is None or not p["disputed"]:
         return jsonify({"error": "no disputed payment with that authorization"}), 404
-    ev = dispute_agent.assemble_evidence(auth_code, p, ledger.entries, getattr(issuer, "audit", []))  # HttpIssuer keeps its own
+    ev = dispute_agent.assemble_evidence(auth_code, p, ledger.entries, processor.audit)
     return jsonify({"evidence": ev, "draft": dispute_agent.draft_response(ev)})
 
 
@@ -689,6 +615,5 @@ def get_ledger():
 
 
 if __name__ == "__main__":
-    where = "Stripe TEST mode" if PROCESSOR == "stripe" else f"issuer at {ISSUER_URL}"
-    print(f"Merchant node on http://127.0.0.1:4242  ({where}; this node never sees card data)")
+    print("Merchant node on http://127.0.0.1:4242  (Stripe TEST mode; this node never sees card data)")
     app.run(port=4242)

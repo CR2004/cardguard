@@ -19,7 +19,7 @@
   .hint { font-size:12px; color:var(--muted); margin-top:4px }
   #result { margin-top:14px; padding:12px; border-radius:8px; background:var(--bg); font-size:14px }
   #result.approved { border-left:4px solid var(--ok) } #result.needs_review { border-left:4px solid var(--warn) }
-  #result.declined, #result.blocked, #result.issuer_rejected { border-left:4px solid var(--bad) }
+  #result.declined, #result.blocked, #result.processor_rejected { border-left:4px solid var(--bad) }
   .big { font-size:28px; font-weight:700 }
   .entry { font-size:12px; padding:6px 0; border-top:1px solid var(--line); font-family:ui-monospace, monospace; white-space:pre-wrap }
   .BLOCKED { color:var(--bad) } .DISCLOSED { color:var(--ok) }
@@ -40,11 +40,10 @@
     <label>Buyer country (demo control; production derives it from the IP address)</label>
     <select id="country"><option>US</option><option>DE</option><option>BR</option><option>NG</option></select>
 
-    <label id="cardlabel">Card, entered inside the issuer's frame (a different origin: this page cannot read it)</label>
-    <iframe id="cardframe" title="Card details" sandbox="allow-scripts allow-same-origin"></iframe>
-    <div id="stripecard" style="display:none;padding:10px;border:1px solid var(--line);border-radius:8px"></div>
-    <div class="hint">Test cards: 4242 4242 4242 4242 12/30 123 (US credit) · 5555 5555 5555 4444 11/29 456 (DE debit) ·
-      4000 0566 5566 5556 10/28 789 (US prepaid) · 4000 0000 0000 0002 09/29 321 (zero balance)</div>
+    <label>Card (Stripe Elements: the number goes from this field to Stripe, never to the store)</label>
+    <div id="stripecard" style="padding:10px;border:1px solid var(--line);border-radius:8px"></div>
+    <div class="hint">Stripe test cards (any future expiry, any CVC): 4242 4242 4242 4242 (US Visa) · 4000 0027 6000 3184 (DE) ·
+      4000 0566 5566 5556 (debit) · 4000 0000 0000 0002 (declined by the bank) · 4000 0000 0000 0101 (CVC check fails)</div>
 
     <label>Gift message (customer free text; only a model-driven agent ever sees it)</label>
     <textarea id="gift" rows="2" placeholder="Happy birthday! ... or an injection attempt"></textarea>
@@ -53,8 +52,6 @@
     <select id="attack">
       <option value="">none (honest merchant)</option>
       <option value="leak">leak: try three ways to put the card number on the wire</option>
-      <option value="tamper">tamper: forward 100x the amount the buyer approved</option>
-      <option value="replay">replay: send the sealed card a second time</option>
     </select>
     <label><input type="checkbox" id="model_agent" style="width:auto"> Model-driven merchant agent (live: an LLM drafts the disclosure with the gift message in its prompt)</label>
 
@@ -65,7 +62,7 @@
     </div>
     <div id="result" class="muted">Waiting.</div>
 
-    <h2>What the store received</h2>
+    <h2>What the store received (a Stripe token, never a card)</h2>
     <div id="received" class="muted">nothing yet</div>
   </section>
 
@@ -86,7 +83,7 @@
 </main>
 
 <script>
-let cfg = null, issuerOrigin = null, stripe = null, stripeCard = null;
+let cfg = null, stripe = null, stripeCard = null;
 const $ = id => document.getElementById(id);
 let reviewerToken = null;
 function reviewerHeaders() {   // human actions need the reviewer credential printed by run_demo.py
@@ -98,57 +95,27 @@ function reviewerHeaders() {   // human actions need the reviewer credential pri
 
 async function init() {
   cfg = await (await fetch('/config')).json();
-  issuerOrigin = new URL(cfg.issuer_url).origin;
   const c = cfg.amount_cuts;
-  $('mode').textContent = `No Stripe, no mock: card details go from the frame to the issuer node, sealed. ` +
-    `This merchant (${cfg.merchant_id}, vertical ${cfg.vertical}): amount "medium" from $${c.medium_from.toFixed(0)}, "high" from $${c.high_from.toFixed(0)} (${c.basis}).`;
+  $('mode').textContent = `Stripe TEST mode: the card goes from Stripe Elements to Stripe; the store receives a pm_ id. ` +
+    `This merchant (${cfg.merchant_id}, vertical ${cfg.vertical}): amount "medium" from $${c.medium_from.toFixed(0)}, "high" from $${c.high_from.toFixed(0)}.` +
+    (cfg.federation ? ` Decisions run on Flower (${cfg.federation}).` : '');
   if (cfg.stores && cfg.stores.length > 1) {
     $('storelabel').style.display = 'block'; $('store').style.display = 'block';
     cfg.stores.forEach(s => { const o = document.createElement('option'); o.value = s; o.textContent = s; $('store').appendChild(o); });
   }
-  if (cfg.processor === 'stripe') {
-    $('mode').textContent = `Stripe TEST mode: the card goes from Stripe Elements to Stripe; the store receives a pm_ id. ` +
-      `This merchant (${cfg.merchant_id}, vertical ${cfg.vertical}): amount "medium" from $${c.medium_from.toFixed(0)}, "high" from $${c.high_from.toFixed(0)}.` +
-      (cfg.federation ? ` Decisions run on Flower (${cfg.federation}).` : '');
-    $('cardlabel').textContent = 'Card (Stripe Elements; test numbers only)';
-    $('cardframe').style.display = 'none'; $('stripecard').style.display = 'block';
-    for (const o of $('attack').options) if (o.value === 'tamper' || o.value === 'replay') o.disabled = true;
-    await new Promise(res => { const s = document.createElement('script'); s.src = 'https://js.stripe.com/v3/'; s.onload = res; document.head.appendChild(s); });
-    stripe = Stripe(cfg.publishable_key); stripeCard = stripe.elements().create('card'); stripeCard.mount('#stripecard');
-  } else {
-    if (cfg.federation) $('mode').textContent += ` Decisions run on Flower (${cfg.federation}).`;
-    $('cardframe').src = cfg.issuer_url + '/card-frame';
-  }
+  await new Promise(res => { const s = document.createElement('script'); s.src = 'https://js.stripe.com/v3/'; s.onload = res; document.head.appendChild(s); });
+  stripe = Stripe(cfg.publishable_key); stripeCard = stripe.elements().create('card'); stripeCard.mount('#stripecard');
   refresh();
-}
-
-function sealCard(amount_cents) {
-  return new Promise((resolve, reject) => {
-    const onMsg = ev => {
-      if (ev.origin !== issuerOrigin || !ev.data) return;
-      if (ev.data.type === 'sealed') { window.removeEventListener('message', onMsg); resolve(ev.data.blob); }
-      if (ev.data.type === 'seal_error') { window.removeEventListener('message', onMsg); reject(new Error(ev.data.error)); }
-    };
-    window.addEventListener('message', onMsg);
-    $('cardframe').contentWindow.postMessage({ type: 'seal', amount_cents, merchant_id: cfg.merchant_id }, issuerOrigin);
-    setTimeout(() => { window.removeEventListener('message', onMsg); reject(new Error('not confirmed in the card frame')); }, 120000);
-  });
 }
 
 async function buy() {
   const out = $('result');
-  out.className = ''; out.textContent = 'Confirm the amount inside the card frame…';
+  out.className = ''; out.textContent = 'Stripe is tokenizing the card…';
   const amount_cents = Math.round(+$('amount').value * 100);
-  let blob;
-  if (cfg.processor === 'stripe') {
-    out.textContent = 'Stripe is tokenizing the card…';
-    const { paymentMethod, error } = await stripe.createPaymentMethod({ type: 'card', card: stripeCard });
-    if (error) { out.textContent = error.message; return; }
-    blob = paymentMethod.id;                           // a Stripe token: all the store ever gets
-  } else {
-    try { blob = await sealCard(amount_cents); } catch (e) { out.textContent = e.message; return; }
-  }
-  $('received').textContent = blob;                    // ciphertext or pm_ id: never a card
+  const { paymentMethod, error } = await stripe.createPaymentMethod({ type: 'card', card: stripeCard });
+  if (error) { out.textContent = error.message; return; }
+  const blob = paymentMethod.id;                        // a Stripe token: all the store ever gets
+  $('received').textContent = blob;
   out.textContent = 'Agents deciding…';
   const res = await (await fetch('/checkout', { method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ blob, amount_cents, buyer_country: $('country').value, store: $('store').value || undefined,
@@ -161,7 +128,7 @@ function showResult(res) {
   const out = $('result');
   out.className = res.outcome;
   let txt = res.outcome.replace(/_/g, ' ').toUpperCase();
-  if (res.outcome === 'issuer_rejected') txt += ` - issuer refused the ${res.attack || ''} attempt: ${res.reason}. Nothing reached the agents.`;
+  if (res.outcome === 'processor_rejected') txt += ` - Stripe refused: ${res.reason}. Nothing reached the agents.`;
   if (res.verdict) txt += ` (score ${res.verdict.score ?? 'hard'}: ${res.verdict.cites.join(', ') || 'no risk flags'})`;
   if (res.verdict && res.verdict.jev) {
     const j = res.verdict.jev;
@@ -172,7 +139,7 @@ function showResult(res) {
   if (res.verdict && res.verdict.store) txt = `[${res.verdict.store}] ` + txt;
   if (res.verdict && res.verdict.network && res.verdict.network.band !== 'low')
     txt += ` · NETWORK: same card at ${res.verdict.network.merchants.join(', ')} within 10 min`;
-  if (res.payment) txt += ` - issuer ${res.payment.status}${res.payment.auth_code ? ' auth ' + res.payment.auth_code : ''}${res.payment.reason ? ': ' + res.payment.reason : ''}`;
+  if (res.payment) txt += ` - Stripe ${res.payment.status}${res.payment.auth_code ? ' ' + res.payment.auth_code : ''}${res.payment.reason ? ': ' + res.payment.reason : ''}`;
   if (res.blocked) txt += ` - ${res.blocked.length} leak attempts stopped by the wire guard, payment voided`;
   if (res.outcome === 'no_model_endpoint') txt += ` - ${res.hint}`;
   out.textContent = txt;

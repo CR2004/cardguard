@@ -1,6 +1,5 @@
 flask>=3.0
 numpy>=2.0
-cryptography>=46.0.7
 stripe>=10.0
 typesafe-sdk>=0.7.2
 flwr[simulation]>=1.39
