@@ -86,7 +86,7 @@ export function App() {
 
   function onScenario(s: Scenario) {
     const next: Inputs = { ...inputs, amountCents: s.amountCents, buyerCountry: s.buyerCountry, attack: s.attack,
-      modelAgent: false };
+      modelAgent: s.modelAgent, gift: s.gift || inputs.gift };
     setScenario(s.id);
     setInputs(next);
     if (s.ring && config && config.stores.length < 3) {
