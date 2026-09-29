@@ -20,7 +20,7 @@ import numpy as np
 
 from cardguard.data import ieee_cis
 from cardguard.specialists import data as sdata
-from cardguard.specialists.features import FAMILIES, build_families
+from cardguard.specialists.features import FAMILIES, build_families, restrict
 from cardguard.specialists.model import (MODELS, auc, band_cuts, fit_logistic, fit_model, logit, predict,
                                          recall_at_top, to_bands)
 
@@ -56,6 +56,8 @@ def run(fam: dict, epochs: int = 300, model: str = "logistic") -> dict:
     fit, stack, test = _split(fam)
     scores, cov, single = {}, {}, {}
     for name in FAMILIES:
+        if name not in fam["families"]:  # e.g. --deployable drops families with no checkout-computable column
+            continue
         f = fam["families"][name]
         X, c = f["X"], f["covered"]
         if (fit & c).sum() < MIN_ROWS or y[fit & c].sum() < MIN_FRAUD:
@@ -127,6 +129,8 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--synthetic", action="store_true", help="offline demo data, six fraud types")
     ap.add_argument("--rebuild", action="store_true", help="ignore the feature cache")
+    ap.add_argument("--deployable", action="store_true",
+                    help="only features a live merchant node could compute at checkout")
     ap.add_argument("--epochs", type=int, default=300)
     ap.add_argument("--model", choices=MODELS, default="logistic", help="what each specialist is")
     ap.add_argument("--limit", type=int, help="read only the first N CSV rows (no cache)")
@@ -143,6 +147,8 @@ def main() -> None:
     else:
         raise SystemExit(f"{sdata.TX_CSV} not found. Put train_transaction.csv (and train_identity.csv) "
                          "in datasets/, or run with --synthetic.")
+    if a.deployable:
+        fam = restrict(fam)
     print(f"rows {len(fam['y']):,}  fraud {fam['y'].mean():.2%}  test rows {int(fam['is_test'].sum()):,}\n")
     print(report(run(fam, epochs=a.epochs, model=a.model)))
 

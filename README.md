@@ -26,9 +26,11 @@ model is trained across merchants with Flower (FedAvg) so that only weights ever
   (dead code, security), ruff/vulture/bandit/pip-audit clean.
 
 **Experiment on branch `specialists-experiment` (offline, not wired into the demo)**: seven fraud specialists, each
-seeing only one family of signals, stacked into one score. On real IEEE-CIS data the stack reaches AUC 0.866
-against 0.773 for the current 9-feature model, and 0.839 when only low/medium/high bands are passed. Results,
-caveats and how to reproduce: [Fraud specialists experiment](#fraud-specialists-experiment-branch-specialists-experiment).
+seeing only one family of signals, stacked into one score. Using every dataset column the stack reaches AUC 0.866
+against 0.773 for the current 9-feature model (0.839 with bands only). **Using only features our checkout can
+compute, the gain shrinks to about +0.014 AUC (0.787), and the bands-only version is 0.763, slightly below the
+current model**: the big gain comes from columns a payment processor engineered, not from our checkout. Results,
+integration plan and human-in-the-loop plan: [Fraud specialists experiment](#fraud-specialists-experiment-branch-specialists-experiment).
 
 **Left, in order**
 1. Commit everything (git shows the package as untracked) and push.
@@ -351,7 +353,9 @@ Design points worth knowing:
   pipeline). Within training, the first 70% fits each specialist and the last 30% fits the stacker on scores the
   specialists have not seen. The test set never fits anything.
 
-### Results (real IEEE-CIS: 590,540 transactions, 3.5% fraud, 118,108 test rows)
+### Results with every dataset column (real IEEE-CIS: 590,540 transactions, 3.5% fraud, 118,108 test rows)
+
+**These use columns our live checkout does not collect; see "The catch" below for the checkout-computable numbers.**
 
 "Catch at 5%" is the share of all fraud that lands in the top 5% of scores. Specialists are LightGBM models; the
 stacker is always logistic regression so the combining step stays simple to audit.
@@ -389,6 +393,37 @@ The same experiment with plain logistic-regression specialists (no extra depende
   Identity 0.863 (-0.002), Device 0.864 (-0.002), Merchant, Network and Geo 0.866 (no change). **Transaction does
   most of the work; Transaction, Behavior and Identity carry nearly all of the gain.**
 
+### The catch: most of the gain needs columns a live checkout does not have
+
+The table above uses every column the dataset offers. Many of them (`C1-C14` counts, `D` timedeltas, `M` match
+flags, payer/recipient email, `addr1`/`dist1`, the device-recognition flags) were engineered by the payment
+processor that produced the data. Our checkout collects none of them. So we re-ran the same experiment with
+`--deployable`: each specialist may only use features the merchant node can compute from what it already holds
+(the amount, its own per-card history, the buyer country, the clock, its own vertical). The Device and Network
+specialists have no such feature and drop out.
+
+| Model (checkout-computable features only) | LightGBM AUC | Catch at 5% | Logistic AUC | Catch at 5% |
+|---|---|---|---|---|
+| Current 9-feature model | 0.773 | 21% | 0.772 | 23% |
+| Best single specialist (Transaction) | 0.748 | 22% | 0.748 | 21% |
+| **Stack (scores)** | **0.787** | **25%** | **0.783** | **23%** |
+| **Stack (bands only)** | **0.763** | **27%** | **0.758** | **24%** |
+| Pooled, one model | 0.792 | 24% | 0.786 | 22% |
+
+Leave-one-out (LightGBM stack): without Transaction 0.765, Identity 0.775, Behavior 0.780, Merchant 0.785,
+Geo 0.787. Behavior falls back to AUC 0.65 because the `D` timedeltas that lifted it are not available.
+
+**How to read this**
+- With inputs a checkout can compute, the stack is only about **+0.014 AUC** over the current model, and the version
+  that ships only bands is **-0.010 AUC** (though it catches slightly more in the top 5%). That is roughly
+  break-even, not an improvement worth wiring into the live path.
+- The 0.09 AUC gain in the full-feature table comes from **richer inputs**, not from the specialist topology. This
+  matches the earlier finding in this README that the level is bounded by the features, not the model.
+- The specialist idea is worth most where different parties really do hold different signal families (a device
+  intelligence provider, an identity/KYC provider, a geo provider, the merchant) and cannot pool them. The
+  IEEE-CIS columns all came from one processor, so this dataset shows what the combination could reach, not what
+  our single-merchant demo checkout can produce.
+
 ### What the data told us, and what we changed
 - The first real run left Behavior weakest (AUC 0.665, catching 8% in the top 5%) because `new_product` and
   `hour_unusual` fire on under 2% of rows: the card proxy has sparse history. Adding the unused `D2, D4, D5, D10,
@@ -408,8 +443,7 @@ The same experiment with plain logistic-regression specialists (no extra depende
 - **No "each specialist catches something the others miss" story.** On real data one specialist dominates. The
   honest claim is that the stack beats the current model while no specialist sees another's columns, not that
   every specialist is needed.
-- **Not deployable as is.** The banded stack needs its cut points re-derived whenever a specialist changes, and the
-  features are computed offline over the whole history rather than at checkout.
+- **Not deployable as is.** Most of the gain uses dataset columns our checkout does not collect (see "The catch"). The banded stack also needs its cut points re-derived whenever a specialist changes.
 - Wording: this narrows what any one agent sees. It does not make anything "PCI compliant".
 
 ### Run it
@@ -418,22 +452,123 @@ pip install -r requirements-experiments.txt          # scikit-learn, lightgbm: o
 python -m cardguard.specialists.experiment --synthetic          # offline, seconds, six injected fraud types
 python -m cardguard.specialists.experiment                      # real data, ~2 min first run (builds the cache)
 python -m cardguard.specialists.experiment --model lgbm         # LightGBM specialists, ~1.5 min
+python -m cardguard.specialists.experiment --deployable         # only checkout-computable features
 python -m cardguard.specialists.experiment --rebuild            # ignore datasets/specialist_features.npz
 python -m cardguard.specialists.experiment --limit 50000        # quick look at the first 50k rows
-python -m pytest tests/test_specialists.py -q                   # 10 tests, offline
+python -m pytest tests/test_specialists.py -q                   # 11 tests, offline
 ```
 Needs `datasets/train_transaction.csv` and `datasets/train_identity.csv` (the `test_*` files have no labels and
 are not used). Synthetic mode is a wiring check only: its fraud types are built so each is visible to one
 specialist, so its numbers say nothing about real performance.
 
-### Decision for the team
-1. **Show it as a result** (Innovation, Technical execution): the 0.866 against 0.773 comparison, with the caveats
-   above.
-2. **Or merge it in.** That is a larger change than the experiment: the Grid would carry several specialists'
-   bands instead of one merchant reply, so the rule "two nodes answering one decision = conflicting replies =
-   human review" (invariant 1a) needs rework, each band must be added to `WIRE_SCHEMA` as a closed vocabulary with
-   a test, and specialists must score the same transaction through a shared key that reveals nothing about the
-   card. If we do, wire only Transaction, Behavior and Identity: the other four add under 0.005 AUC combined.
+### What is integrated today (checked against the code)
+
+| Question | Answer | Where |
+|---|---|---|
+| Does any live code import the specialists? | No. It is an offline package plus tests. | `cardguard/specialists/` |
+| How does the federated model reach a decision now? | FedAvg -> `fl_weights.json` -> merchant scores 9 checkout features -> one `model_risk_band` -> coordinator adds +1 (medium) or +2 (high) to a rules score | `flower_app.py:71`, `merchant.py:171,454-459`, `coordinator.py:36` |
+| What may cross a node boundary? | 8 closed-vocabulary facts. No specialist key exists. | `guard.py:18-28` |
+| Can several nodes answer one decision? | No: the coordinator accepts one fact set per `(decision_id, purpose)`, and two nodes answering is a conflict that goes to human review | `coordinator.py:65-75`, invariant 1a |
+
+### If the specialists win: what the federated learning becomes
+
+There are two independent ways to split fraud data, and the design uses both:
+
+```
+                     HORIZONTAL (across merchants: same columns, different customers)
+                      merchant W     merchant C     merchant R    ...
+   VERTICAL          +------------+ +------------+ +------------+
+   (across           | Transaction| | Transaction| | Transaction|   FedAvg inside a specialist,
+   signal families:  | Behavior   | | Behavior   | | Behavior   |   weights only (logistic)
+   different columns,| Identity   | | Identity   | | Identity   |
+   same transactions)+------------+ +------------+ +------------+
+                      Device / Geo / Network / Merchant: held by the party that owns that signal
+                                 |   one band per specialist: low / medium / high
+                                 v
+                        coordinator: stacker (logistic on bands) + rules + Jev vote
+                                 v
+                        verdict in code -> human review -> label -> back to every specialist
+```
+
+- **Vertical axis (new).** Each specialist trains locally on its own columns and returns only a band. Nothing is
+  averaged across specialists, because their weights mean different things.
+- **Horizontal axis (existing).** Inside a specialist that every merchant runs (Transaction, Behavior, Identity),
+  merchants still FedAvg their copies, so small merchants keep benefiting from the network.
+- **Model type matters.** FedAvg needs models that are weight vectors (logistic regression, small nets). LightGBM
+  trees cannot be averaged that way (Flower has tree strategies in some versions; not checked for 1.39, so treat
+  as unverified). The measurements say this costs little: with checkout-computable features logistic scores 0.783
+  against LightGBM 0.787, and with all columns 0.846 against 0.866. Use logistic where FedAvg runs, and LightGBM
+  only for a specialist held by a single party.
+- **The stacker.** It needs the specialists' bands and the true label for the same transactions, joined on a
+  pseudonymous `decision_id`. It is a handful of weights, kept as JSON (Flower Hub accepts `.json`, not model files).
+- **Labels flow back by `decision_id`.** A human verdict is broadcast to every specialist; each stores
+  (its own features, label) locally and never sees another specialist's features.
+
+### Human in the loop: what exists (verified) and what is missing
+
+**Already there, with tests:**
+- **Review queue.** A `step_up` verdict (rules score 3-7, or Jev says step_up, or Jev's confidence in an approve is
+  too low) holds the payment in a queue (`merchant.py:555-559`, `coordinator.py:89,172`). Unreviewed items are voided
+  after one hour, so it fails closed (`merchant.py:355`).
+- **Only a credentialed human moves money.** Approve or decline needs the reviewer token (`merchant.py:573`; test:
+  `test_merchant.py:62`). The reviewer sees banded facts and the verdict, never card data (`test_merchant.py:101`).
+- **The human's decision becomes a label** (approve = 0, decline = 1), stays on the node (`merchant.py:580`), and
+  chargebacks add fraud labels (`merchant.py:597-607`); a dispute-evidence agent drafts a response a human approves.
+- **Labels retrain the federated model.** `/agent/retrain` runs a federated round with each human label weighted 50
+  ordinary rows, then fine-tunes locally, and reports the band before and after (`retrain.py`,
+  `merchant.py:657-674`; tests: `test_retrain.py`, `test_review_fixes.py`).
+
+**Gaps against "once classified as fraud, add a human opinion":**
+
+| # | Gap | Evidence |
+|---|---|---|
+| G1 | A `decline` is final: no human ever sees it. "Fraud" is not a separate stage, only a weighted vote (a `high` model band alone adds just +2, below the step_up threshold of 3). | `merchant.py:560`, `coordinator.py:36,89` |
+| G2 | Human labels live in an in-memory list: lost on restart, not persisted. | `merchant.py:269,360` |
+| G3 | The human gives only approve/decline: no reason, no reviewer identity, and the human's opinion itself is not recorded in the audit chain (only the payment settlement that follows it). | `merchant.py:571-588` |
+| G4 | Retraining is manual and per node; labels are the 9 current features, so they cannot train the specialists. | `retrain.py`, `merchant.py:657` |
+| G5 | No tracking of human-versus-model disagreement, so nobody can see false positives or how often the model is overruled. | not implemented |
+| G6 | `GET /reviews` needs no credential (it shows banded facts only). Acting on a review does need one. Decide if that is intended. | `merchant.py:564` |
+
+**Planned changes (each with a test):**
+1. **A "fraud suspected" stage after classification.** Suspected = any soft decline, any `step_up`, or
+   `model_risk_band = high` together with at least one other signal. Soft declines go to a second-look queue: the
+   payment stays voided unless a human overturns it. A hard decline (CVC failed) stays final.
+2. **A structured human opinion.** `not_fraud` / `confirm_fraud` / `unsure`, plus a reason from a closed vocabulary
+   (for example `card_testing`, `ring_pattern`, `known_customer`, `customer_verified`, `other`). A free-text note is
+   leak-scanned and kept on the node. Each opinion is appended to the hash-chained audit with a reviewer id.
+3. **Persist labels** to a local file so they survive restarts.
+4. **Label propagation by `decision_id`** (needed once specialists exist): every specialist stores its own features
+   with the label, and the stacker stores the bands with it.
+5. **Retrain trigger and metrics.** Retrain after N new labels; show model-versus-human agreement, overturn rate and
+   time to review on the page.
+6. **Guardrails.** No human action can override a hard decline. Optionally require two reviewers above an amount.
+
+### Real-time integration plan
+
+Every phase leaves the demo path working. Time estimates are rough guesses.
+
+| Phase | What | Files | Gate to continue | Est. |
+|---|---|---|---|---|
+| 0 | Experiment, full and checkout-only results, this plan | `cardguard/specialists/`, README | done | done |
+| 1 | **Decide.** Read the two result tables above and pick a path. | none | team agrees | 10 min |
+| 2 | **Human in the loop after classification** (changes 1-3 above, then 5) | `merchant.py`, `coordinator.py` (stage flag only), tests | all old tests still pass; new tests for queue, closed reasons, audit entry, persistence | 1.5-2 h |
+| 3A | **Replay demo of the specialists.** Export trained specialists (logistic) to JSON; a replay endpoint scores a chosen IEEE-CIS test transaction and shows each specialist's band and the stack. Labelled "replay of real data", not live. | new `specialists/export.py`, replay route, page panel | export reproduces the experiment's AUC | 2-3 h |
+| 3B | **Specialist bands as extra facts from the same node.** Add up to three `*_risk_band` keys to `WIRE_SCHEMA`, `WEIGHTS` and `FACT_MEANINGS` (checkout-computable features only). Invariant 1a stays intact. | `guard.py`, `coordinator.py`, `merchant.py`, tests | only if the deployable stack beats the current model on the same holdout | 2 h |
+| 4 | **True specialist nodes.** One SuperNode per specialist, one band each. Needs invariant 1a reworked: accept one reply per `(decision_id, node_id)` with a quorum and abstain states, and treat the same node answering twice as the conflict. Label propagation (change 4), stacker retraining, per-specialist band cuts. | `agent_app.py`, `Verifier`, `merchant.py`, `retrain.py` | after the hackathon | days |
+| 5 | **Production.** Collect the richer signals for real (device intelligence, identity, geo), monitor drift, re-derive band cuts on a schedule, DP on the stacker. | | | |
+
+Rules that carry through every phase: each new band is a closed vocabulary with a test (invariant 2); models only
+ever see banded facts; the verdict stays computed in code; no card data anywhere near a specialist.
+
+### Recommendation and decision for the team
+
+1. **Present the specialist result honestly:** 0.866 against 0.773 on all columns, and about 0.787 against 0.773 on
+   checkout-computable columns. The story is that signal richness drives accuracy, and that vertical federation
+   lets parties who cannot pool their signal families still combine them.
+2. **Spend the build time on phase 2** (human in the loop after classification). It is safe, it is a visible demo
+   moment, it uses only existing pieces, and it answers the safety and oversight criterion directly.
+3. **Add phase 3A only if time allows.** Skip 3B unless the deployable gain looks better on a re-check, and leave
+   phase 4 for after the hackathon.
 
 ## Decision logic
 

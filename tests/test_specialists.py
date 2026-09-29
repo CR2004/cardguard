@@ -123,3 +123,15 @@ def test_lgbm_specialists_run_and_stack_still_wins(fam, monkeypatch):
     r = experiment.run(fam, epochs=100, model="lgbm")
     assert r["model"] == "lgbm"
     assert r["stack_scores"]["auc"] > max(v["auc"] for v in r["single"].values()) + 0.03
+
+
+def test_deployable_subset_names_exist_and_drop_vesta_only_families(fam):
+    from cardguard.specialists.features import DEPLOYABLE, restrict
+    for family, allowed in DEPLOYABLE.items():
+        names = fam["families"][family]["names"]
+        for a in allowed:
+            assert any(n == a or (a.endswith("=") and n.startswith(a)) for n in names), (family, a)  # no typos
+    small = restrict(fam)
+    assert "device" not in small["families"] and "network" not in small["families"]
+    assert not any(n.startswith("C") and n[1:].isdigit() for n in small["families"]["transaction"]["names"])
+    assert all(small["families"][k]["X"].shape[0] == len(fam["y"]) for k in small["families"])

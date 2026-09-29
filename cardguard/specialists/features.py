@@ -207,3 +207,31 @@ def build_families(raw: dict) -> dict:
 
     return {"families": fams, "y": raw["y"], "vert": raw["prod"], "vert_names": voc["prod"],
             "is_test": is_test, "dt": dt}
+
+
+# Features a live merchant node could compute at checkout from what it already holds (its own
+# per-card history, the amount, the buyer country, the clock, its own vertical). Everything else in
+# the full set depends on columns Vesta engineered for the dataset (C, D, M, email, addr/dist, device
+# recognition) that this checkout does not collect. An entry ending in "=" matches by prefix.
+DEPLOYABLE = {
+    "transaction": ["high_amount", "micro_amount", "round_1", "round_10", "subcent", "velocity"],
+    "identity": ["credit", "card_age", "new_customer"],
+    "geo": ["country_mismatch"],
+    "behavior": ["night", "hour_unusual", "has_hist", "amt_dev", "new_product", "days_since_prev",
+                 "d3_missing", "prior_count"],
+    "merchant": ["product="],
+}
+
+
+def _allowed(name: str, allow: list[str]) -> bool:
+    return any(name == a or (a.endswith("=") and name.startswith(a)) for a in allow)
+
+
+def restrict(fam: dict, allow: dict = DEPLOYABLE) -> dict:
+    """The same data with only the allowed columns; a family left with none is dropped."""
+    kept = {}
+    for name, f in fam["families"].items():
+        idx = [j for j, nm in enumerate(f["names"]) if _allowed(nm, allow.get(name, []))]
+        if idx:
+            kept[name] = {"X": f["X"][:, idx], "names": [f["names"][j] for j in idx], "covered": f["covered"]}
+    return {**fam, "families": kept}
