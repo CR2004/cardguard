@@ -34,7 +34,7 @@ merchant startup; UI polish (the new review panel has not been opened in a brows
 - *Human in the loop.* Soft declines get a second look; a human's opinion has a reason from a fixed list, is
   audited in a hash-chained log, and becomes a saved training label.
 - Scoreboard of what is live: [Scoreboard](#fraud-specialists-four-models-trained-merchant-by-merchant). Details, the live wiring and the plan: [Fraud specialists](#fraud-specialists-four-models-trained-merchant-by-merchant).
-  A plain-words before-and-after guide for the team: [OLD_VS_NEW.md](OLD_VS_NEW.md).
+  How the training and the federation work, in plain words: [TRAINING.md](TRAINING.md).
 
 **Before merging that branch:**
 1. Run `python -m pytest -q` in the project `.venv` (with `flwr`). On the machine that built the branch `flwr`
