@@ -19,7 +19,7 @@ from __future__ import annotations
 import json
 
 from cardguard.decision import llm
-from cardguard.decision.guard import WIRE_SCHEMA, find_leaks
+from cardguard.decision.guard import WIRE_SCHEMA, WireViolation, find_leaks, strip_for_wire
 
 PROMPT = (
     "You are the merchant's checkout agent. Produce the JSON disclosure for the fraud coordinator. "
@@ -39,8 +39,17 @@ def compose(facts: dict, gift_message: str, client=None) -> dict | None:
     client = client if client is not None else _default_client()
     if client is None:
         return None
+    # This deliberately vulnerable demo sends gift text to a model. Reject payment-looking
+    # input before the request: guarding the model's output cannot undo an input disclosure.
+    gift = gift_message[:500]
+    if any(ch.isdigit() for ch in gift) or find_leaks(gift):
+        return {"raw": "", "payload": None, "model": llm.model_name(), "error": "unsafe_input"}
+    try:
+        facts = strip_for_wire(facts)
+    except WireViolation:
+        return {"raw": "", "payload": None, "model": llm.model_name(), "error": "unsafe_facts"}
     schema = {k: (["tok_<16 letters>"] if k == "token" else sorted(v)) for k, v in WIRE_SCHEMA.items()}
-    prompt = PROMPT.format(schema=json.dumps(schema), facts=json.dumps(facts), gift=gift_message[:500])
+    prompt = PROMPT.format(schema=json.dumps(schema), facts=json.dumps(facts), gift=gift)
     try:
         resp = client.responses.create(model=llm.model_name(), input=prompt, max_output_tokens=300)
         raw = resp.output_text

@@ -10,6 +10,7 @@ from __future__ import annotations
 import functools
 import logging
 import threading
+import time
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
@@ -92,6 +93,17 @@ def _client(superlink: str):
     return init_http_client_from_connection(read_superlink_connection(superlink))
 
 
+def _wait_for_completed_run(stub, run_id: int, deadline: float) -> bool:
+    """A verdict event precedes task teardown; wait until series state is committed."""
+    from flwr.proto.control_pb2 import ListRunsRequest
+    while time.monotonic() < deadline:
+        run = stub.ListRuns(ListRunsRequest(run_id=run_id)).run_dict.get(run_id)
+        if run is not None and run.finished_at:
+            return run.status.status == "finished" and run.status.sub_status == "completed"
+        time.sleep(0.2)
+    return False
+
+
 def decide_over_flower(superlink: str, decision_id: str, timeout: float = 240.0,
                        prompt: str = DEFAULT_PROMPT, app_path: str = str(ROOT), overrides: tuple = (),
                        client: Callable[[str], Any] = _client, start_run=_start_run, events=_events) -> dict | None:
@@ -102,6 +114,7 @@ def decide_over_flower(superlink: str, decision_id: str, timeout: float = 240.0,
     def worker() -> None:
         stub = None
         try:
+            deadline = time.monotonic() + timeout
             stub = client(superlink)
             run_id = start_run(stub, superlink, decision_id, prompt, app_path, overrides) if overrides else \
                 start_run(stub, superlink, decision_id, prompt, app_path)
@@ -110,10 +123,13 @@ def decide_over_flower(superlink: str, decision_id: str, timeout: float = 240.0,
                 result["last_event"] = event_type
                 if event_type == VERDICT_EVENT and isinstance(payload.get("verdict"), dict):
                     result["verdict"] = payload["verdict"]
-                    return
+                    break
                 if event_type in {"error", "response.failed"}:
                     result["error"] = payload
                     return
+            if "verdict" in result and not _wait_for_completed_run(stub, run_id, deadline):
+                result.pop("verdict")
+                result["error"] = "run did not complete before timeout"
         except Exception as e:  # noqa: BLE001 - any failure means "no verdict from the federation"
             result["error"] = f"{type(e).__name__}: {e}"
         finally:
@@ -128,6 +144,7 @@ def decide_over_flower(superlink: str, decision_id: str, timeout: float = 240.0,
     t.join(timeout)
     if t.is_alive():
         result["error"] = "timed out waiting for the federation"
+        result.pop("verdict", None)  # an emitted verdict is not usable until the run completes
     if "verdict" not in result:
         log.warning("no verdict from %s for decision %s: %s (last event: %s); check the SuperLink log",
                     superlink, decision_id, result.get("error"), result.get("last_event"))

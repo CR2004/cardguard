@@ -12,11 +12,18 @@ No endpoint configured, or any error -> a template sentence instead.
 """
 from __future__ import annotations
 
+import re
 
 from cardguard.decision import llm
 from cardguard.decision.coordinator import ALLOWED_CITES
 
 LABELS = {"approve": "Approved", "step_up": "Sent to a human reviewer", "decline": "Declined"}
+_ACTION_WORDS = re.compile(r"\b(ignore|bypass|override|release|charge|refund|reveal|disclose|output)\b", re.I)
+_DECISION_WORDS = {
+    "approve": re.compile(r"\bapprov(?:e|ed|al)\b", re.I),
+    "step_up": re.compile(r"\b(review|reviewer|held|step.?up)\b", re.I),
+    "decline": re.compile(r"\bdeclin(?:e|ed)\b", re.I),
+}
 
 
 def template(verdict: dict) -> str:
@@ -31,7 +38,14 @@ def explain(verdict: dict, client=None) -> dict:
              "decided_by": verdict.get("decided_by") if verdict.get("decided_by") in {"rules", "rules+jev"} else "rules"}
     if verdict.get("confidence_gated"):
         facts["note"] = "an automated model was not confident enough to approve on its own"
-    return llm.ask(("You explain card-payment risk decisions to a merchant's support team. "
+    out = llm.ask(("You explain card-payment risk decisions to a merchant's support team. "
                     "Write ONE plain sentence (max 30 words) saying what happened and why, "
                     "using only the signals given. No numbers you were not given."),
                    str(facts), fallback=template(verdict), client=client, timeout=8.0)
+    if out["by"] != "template":
+        text = out["text"]
+        decision = facts["decision"]
+        if (_ACTION_WORDS.search(text) or not _DECISION_WORDS[decision].search(text)
+                or any(pattern.search(text) for name, pattern in _DECISION_WORDS.items() if name != decision)):
+            return {"text": template(verdict), "by": "template", "error": "rejected_output"}
+    return out
