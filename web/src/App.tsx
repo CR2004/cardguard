@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useReducedMotion } from 'motion/react';
-import { api, setReviewerToken } from './api/client';
+import { api, enableDemoReviewerSession } from './api/client';
 import type { Config } from './api/types';
 import type { StripeCardHandle } from './card/StripeCard';
 import { HumanReviewPanel } from './components/HumanReviewPanel';
@@ -46,7 +46,7 @@ export function App() {
 
   useEffect(() => {
     api.config().then((cfg) => {
-      if (cfg.reviewer_token) setReviewerToken(cfg.reviewer_token); // demo node on this machine: never ask
+      if (cfg.demo_controls) enableDemoReviewerSession(); // demo only: the node's session cookie, never the token
       setConfig(cfg);
     }).catch((e: Error) => setConfigError(e.message));
   }, []);
@@ -172,7 +172,7 @@ export function App() {
           </div>
         </main>
         {showReview
-          ? <HumanReviewPanel view={view} onDecide={inv.decide} />
+          ? <HumanReviewPanel view={view} demo={config.demo_controls} onDecide={inv.decide} />
           : <Inspector view={view} reveal={reveal} gateKey={inv.gateKey} reduced={reduced} />}
       </div>
       <TraceTimeline events={state.events} applied={state.applied} />

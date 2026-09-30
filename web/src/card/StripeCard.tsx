@@ -47,8 +47,9 @@ export const EMPTY_CARD_UI: CardUi = { ready: false, brand: 'unknown', focus: nu
 const PUBLISHABLE_TEST_KEY = /^pk_test_[A-Za-z0-9]{24,}$/;
 export function keyProblem(key: string | null | undefined): string | null {
   return key && PUBLISHABLE_TEST_KEY.test(key) ? null
-    : 'Stripe is not configured on this store node: it has no real Stripe TEST publishable key (only a placeholder '
-      + 'such as pk_test_x). Set STRIPE_PUBLISHABLE_KEY to the pk_test_… key from the Stripe dashboard and restart python run_demo.py.';
+    : 'Stripe TEST is not configured. This store node has no real Stripe TEST publishable key (none, or a placeholder '
+      + 'such as pk_test_x), so no card fields are shown. Set STRIPE_PUBLISHABLE_KEY to the pk_test_… key (make demo reads '
+      + 'it from your Stripe credential file) and restart.';
 }
 
 function loadStripe(): Promise<void> {

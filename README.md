@@ -224,9 +224,15 @@ cp .env.example .env
 Fill in `.env`: `STRIPE_SECRET_KEY` and `STRIPE_PUBLISHABLE_KEY` (test keys, required; live keys are refused),
 `FLWR_MODEL_API_KEY` (Endeavor through Flower), `TYPESAFE_API_KEY` (Jev), and optionally `REVIEWER_TOKEN`
 (eight or more characters; otherwise one is minted at every start). Without the model keys, rules decide and a template
-explains.
+explains. With demo controls on, the review panel never asks for it: the node gives its own page a demo-only HttpOnly
+session cookie, and the token itself never reaches the browser.
 
-Decisions over Flower, three terminals:
+**One command:** `make demo` (UI build, bank and merchant; decisions in-process) or `make demo-flower` (also a local
+SuperLink and SuperNode, with its own Flower config under `.demo/flwr`). Stripe TEST keys come from `.env` or
+`~/credentials/stripe_test.txt`; Ctrl+C stops everything, `make stop` stops a demo left running, `make test` runs every
+check.
+
+Or by hand, decisions over Flower, three terminals:
 
 First add the local SuperLink to `~/.flwr/config.toml`, if it is not there yet:
 

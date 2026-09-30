@@ -6,9 +6,11 @@
 
 Stripe is the payment rail. The bank node only attests (bands about the cardholder, and round 2's
 travel_check); it never sees a card or moves money. The runner uses REVIEWER_TOKEN from .env when one
-is set (a memorable demo value that survives restarts), otherwise mints one and prints it; the page
-asks for it once. It also mints a merchant-to-bank signing secret. The bank process gets an allowlisted
-environment (no Stripe, model or reviewer credentials); the merchant never gets the bank's registry.
+is set (a memorable demo value that survives restarts), otherwise mints one. With demo controls on (the
+default) the page signs in with a demo-only session cookie and the token is never printed; with them off
+it is printed and the page asks for it once. It also mints a merchant-to-bank signing secret. The bank
+process gets an allowlisted environment (no Stripe, model or reviewer credentials); the merchant never
+gets the bank's registry.
 Ctrl-C stops both.
 """
 from __future__ import annotations
@@ -71,7 +73,10 @@ def main() -> int:
     env = {**{k: v for k, v in os.environ.items() if not k.startswith("BANK_")},  # never the bank's registry
            "PYTHONUNBUFFERED": "1", "REVIEWER_TOKEN": reviewer, "MERCHANT_ID": merchant_id,
            "DEMO_CONTROLS": os.environ.get("DEMO_CONTROLS", "1"), "BANK_URL": BANK_URL, "BANK_SECRET": bank_secret}
-    if preset:
+    if env["DEMO_CONTROLS"] == "1":  # demo only: the page gets a session cookie, so the token is never shown
+        print("reviewer token: " + ("from the environment" if preset else "minted for this run")
+              + "; not shown, the demo page signs in with a session cookie")
+    elif preset:
         print("reviewer token: using REVIEWER_TOKEN from the environment (the page asks for it once)")
     else:
         print(f"reviewer token (the page asks for it once): {reviewer}")

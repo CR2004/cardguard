@@ -304,19 +304,20 @@ h1, h2, h3 { margin: 0; }
 .paycard[data-state="token"] .paycard__chip-row, .paycard[data-state="tokenizing"] .paycard__chip-row { display: none; }
 
 /* card entry: three Stripe Elements iframes, styled as one premium field group */
-.card-entry { display: flex; flex-direction: column; gap: 10px; }
+.card-entry { display: flex; flex-direction: column; gap: 10px; container: card-entry / inline-size; }
 .card-entry__head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
 .card-entry__title { font-size: 13px; font-weight: 600; color: var(--text); }
 .card-entry__secure { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--text-3); white-space: nowrap; }
 .card-entry__fields { display: flex; flex-direction: column; gap: 10px; }
 .card-entry__row { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 10px; }
+@container card-entry (max-width: 240px) { .card-entry__row { grid-template-columns: minmax(0, 1fr); } }
 .sfield { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
 .sfield__label { font-size: 12px; font-weight: 500; color: var(--text-3); transition: color var(--fast) var(--ease-out); }
 .sfield[data-focus] .sfield__label { color: #cfc9ff; }
 .sfield[data-invalid] .sfield__label { color: #ff9f96; }
-.sfield__box { position: relative; }
+.sfield__box { position: relative; min-width: 0; }
 .sfield__host {
-  height: 46px; padding: 13px 34px 13px 14px; border-radius: 12px;
+  min-width: 0; overflow: hidden; height: 46px; padding: 13px 34px 13px 14px; border-radius: 12px;
   background: rgba(5, 7, 15, 0.55); border: 1px solid var(--hairline-2);
   box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.35);
   transition: border-color var(--fast) var(--ease-out), box-shadow var(--fast) var(--ease-out);

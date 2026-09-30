@@ -4,7 +4,7 @@ import { keyProblem } from './StripeCard';
 describe('keyProblem: only a real Stripe TEST publishable key reaches Stripe.js', () => {
   it('refuses placeholders, live keys, secret keys and a missing key with a clear configuration error', () => {
     for (const bad of ['pk_test_x', 'pk_test_offline', `pk_live_${'A'.repeat(40)}`, `sk_test_${'A'.repeat(40)}`, '', null, undefined]) {
-      expect(keyProblem(bad)).toMatch(/Stripe is not configured.*STRIPE_PUBLISHABLE_KEY/);
+      expect(keyProblem(bad)).toMatch(/^Stripe TEST is not configured\..*STRIPE_PUBLISHABLE_KEY/);
     }
   });
 
