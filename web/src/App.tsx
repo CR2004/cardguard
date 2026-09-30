@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useReducedMotion } from 'motion/react';
-import { api } from './api/client';
+import { api, setReviewerToken } from './api/client';
 import type { Config } from './api/types';
 import type { StripeCardHandle } from './card/StripeCard';
 import { HumanReviewPanel } from './components/HumanReviewPanel';
@@ -45,7 +45,10 @@ export function App() {
   }), [tokenizing, state.events, state.applied, state.ciphertext, state.status, reveal.evaluating]);
 
   useEffect(() => {
-    api.config().then(setConfig).catch((e: Error) => setConfigError(e.message));
+    api.config().then((cfg) => {
+      if (cfg.reviewer_token) setReviewerToken(cfg.reviewer_token); // demo node on this machine: never ask
+      setConfig(cfg);
+    }).catch((e: Error) => setConfigError(e.message));
   }, []);
 
   const busy = tokenizing || (state.status === 'running' && !inv.finished && !inv.awaitingHuman);

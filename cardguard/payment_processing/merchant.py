@@ -474,7 +474,11 @@ def config():
                     "federation": FEDERATION or None, "stores": STORES, "bank_attestation": bank is not None,
                     "publishable_key": processor.publishable_key, "demo_controls": DEMO_CONTROLS,
                     "wire_vocabulary": {k: sorted(v) for k, v in WIRE_SCHEMA.items() if v},  # the closed vocabulary
-                    "amount_cuts": {"medium_from": p50, "high_from": p90, "basis": basis}})
+                    "amount_cuts": {"medium_from": p50, "high_from": p90, "basis": basis},
+                    # Demo only: this node's own page, loaded on this machine, gets the reviewer credential so the
+                    # presenter is never asked for it. Never with demo controls off, never to another machine; other
+                    # sites cannot read this response (no CORS) and a rebound host is refused above.
+                    **({"reviewer_token": REVIEWER_TOKEN} if DEMO_CONTROLS and REVIEWER_TOKEN and local_only() else {})})
 
 
 @app.post("/checkout")

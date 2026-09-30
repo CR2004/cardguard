@@ -108,3 +108,17 @@ def test_conflicting_replies_from_two_nodes_go_to_a_human():
                for n in ("7", "8")]
     v = aa.decide_from_replies(replies, "d1", Verifier())
     assert v["decided_by"] == "no_facts" and any("conflicting" in r["reason"] for r in v["rejected"])
+
+
+def test_reviewer_credential_reaches_only_the_local_demo_page(monkeypatch):
+    """Demo convenience: the node gives its own page the reviewer credential, so the presenter is never asked.
+    Only with demo controls on, only to a request from this machine, never to anyone else."""
+    from cardguard.payment_processing import merchant
+    monkeypatch.setattr(merchant, "REVIEWER_TOKEN", "demo-review-credential")
+    c = merchant.app.test_client()
+    monkeypatch.setattr(merchant, "DEMO_CONTROLS", True)
+    assert c.get("/config").get_json()["reviewer_token"] == "demo-review-credential"
+    remote = c.get("/config", environ_base={"REMOTE_ADDR": "10.0.0.7"}).get_json()
+    assert "reviewer_token" not in remote
+    monkeypatch.setattr(merchant, "DEMO_CONTROLS", False)
+    assert "reviewer_token" not in c.get("/config").get_json()
