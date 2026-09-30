@@ -1,4 +1,52 @@
-# CardGuard demo script (4 minutes)
+# CardGuard demo guide
+
+Setup, the 4-minute script, what each scenario should show, and what to do when something breaks. How the parts fit
+together is in [ARCHITECTURE.md](ARCHITECTURE.md); the threat model is in [SECURITY.md](SECURITY.md).
+
+## Setup
+
+Python 3.11 to 3.13, [uv](https://docs.astral.sh/uv/), pnpm, and Stripe TEST keys (live keys are refused).
+
+```bash
+git clone https://github.com/CR2004/cardguard.git && cd cardguard
+cp .env.example .env     # fill in STRIPE_SECRET_KEY and STRIPE_PUBLISHABLE_KEY (test keys)
+make demo-flower         # creates .venv, installs, builds the UI, starts everything
+```
+
+Optional in `.env`: `FLWR_MODEL_API_KEY` (Endeavor through Flower), `TYPESAFE_API_KEY` (Jev), and `REVIEWER_TOKEN`
+(eight or more characters; otherwise one is minted at every start). Without the model keys, rules decide and a template
+explains. The launcher also reads keys from `~/credentials/stripe_test.txt` (`SECRET_API_KEY` / `PUBLISHABLE_KEY`),
+`jev.txt` and `flower.txt`, or another folder named by `CARDGUARD_CREDENTIALS`; values are never printed.
+
+| Command | What it does |
+|---|---|
+| `make demo` | Bank and merchant nodes; the coordinator runs inside the merchant process with the same rules |
+| `make demo-flower` | The same, plus a local Flower SuperLink and SuperNode (its own Flower config under `.demo/flwr`) |
+| `make test` | Python tests, then the web typecheck, lint, tests and build; runs every step, fails if any failed |
+| `make build` | The web UI (`web/dist`), rebuilt only when its sources changed |
+| `make stop` | Stops a demo left running (only this demo's own processes) |
+| `make clean` | Removes the web build and the demo's runtime files (keeps `.demo` labels, audit and keys) |
+
+By hand, decisions over Flower, three terminals. First add the local SuperLink to `~/.flwr/config.toml`
+(the scripts run its Runtime API on port 8010):
+
+```toml
+[superlink.local-agent]
+address = "127.0.0.1:8010"
+insecure = true
+```
+
+```bash
+source .venv/bin/activate
+python scripts/run_superlink.py
+python scripts/run_supernode.py
+python run_demo.py --federation local-agent --stores store-a,store-b,store-c
+```
+
+Training on real data: put IEEE-CIS `train_transaction.csv` in `datasets/` (see
+[datasets/README.md](../datasets/README.md)), then `python -m cardguard.training.flower_app` for the federated model and
+`python -m cardguard.specialists.export` for the specialists. Without it, training and tests use synthetic data.
+Details: [TRAINING.md](TRAINING.md).
 
 ## Before you go on stage
 
@@ -11,7 +59,8 @@ make demo-flower        # or: make demo  (same stores, decisions in-process, no 
 Open http://127.0.0.1:4242. The top bar should read **Stripe test · Bank connected · Flower local-agent**. The page
 never asks for the reviewer credential (a demo-only HttpOnly session cookie; the token never reaches the browser):
 the review panel shows only its buttons.
-Keep a second tab on flower.ai (or `flwr list supergrid`) to show the SuperGrid runs. Type Stripe's test Visa
+If our SuperGrid SuperNode is running, keep a second tab on flower.ai (or `flwr list supergrid`) to show those runs;
+the local demo does not need it. Type Stripe's test Visa
 4242 4242 4242 4242, any future date, any CVC, into the card fields (the copy button under the fields copies it).
 
 ### Which card for which scenario
@@ -78,23 +127,9 @@ becomes a label), the federated model with this node's human-label count, and th
 
 ## What data crosses between the agents
 
-Nothing else crosses. Every value on the wire is from a closed vocabulary and passes the wire guard (unknown keys,
-off-vocabulary values, long strings and card-like digit runs are refused and logged).
-
-| Link (channel on screen) | What is sent | What is never sent |
-|---|---|---|
-| Buyer to **Stripe** (Stripe Elements) | Card number, expiry, CVC | Nothing reaches the store or any node |
-| **Stripe** to **Store** (Stripe) | A `pm_...` payment-method id; card checks: funding type, CVC result, card country, a fingerprint | The card number. The fingerprint never leaves the Stripe adapter: it becomes a letters-only card reference (`tok_` + 16 letters) |
-| **Store** to **Bank**, round 1 (Signed) | The card reference and the card's coarse issuing region (e.g. "North America") | Amount, buyer, city, anything about the card itself. Requests are signed per merchant |
-| **Bank** to **Store**, round 1 (Signed) | `issuer_behavior` low/medium/high/unknown, `issuer_recent_declines` none/some/many/unknown | The history behind them |
-| **Coordinator** to **Store's SuperNode** (Flower Grid) | A question: `{purpose, decision_id}` | Nothing else exists on the Grid |
-| **Store's SuperNode** to **Coordinator** (Flower Grid) | The token plus banded facts: `amount_band` (relative to this store's own order sizes), `country_mismatch`, `card_funding`, `cvc_check`, `velocity_band`, `new_customer`, `model_risk_band` (federated model), `specialist_stack_band` (four specialist models), and the bank's two bands | Exact amount, country, hour, card history, raw model scores, the four individual specialist bands |
-| **Coordinator** and **Network memory** (state) | Card reference, store identity, time | Anything about the card or the purchase. Out comes one band: `network_velocity_band` low/medium/high |
-| Round 2: **Coordinator** to **Store** to **Bank** (Flower Grid, then Signed) | One question: is travel plausible? The bank gets the card reference, the card's region and the buyer's region | The buyer's country or city |
-| Round 2 answer | `travel_check` plausible/implausible/unknown | The bank's reason |
-| **Coordinator** to **Policy gate** (code) | The verified facts | Nothing leaves the coordinator |
-| Models | **Jev** (TypeSafe) votes on the banded facts only; **Endeavor** (via Flower) writes one sentence from the verdict and recognised cites only | Neither sees a token, a card, `travel_check`, or a Grid payload |
-| **Gate** to **Reviewer** (review) | The held payment's evidence and the gate's reasons | Card data: the reviewer sees bands too |
+Only closed-vocabulary bands, a `{purpose, decision_id}` question, one round-2 word and a letters-only card reference.
+The link-by-link table (what is sent, what is never sent) is in
+[ARCHITECTURE.md](ARCHITECTURE.md#what-crosses-each-link).
 
 ## The scenarios
 
@@ -146,13 +181,16 @@ Only a hold reaches a person; approve and decline are final. On the held ring pa
    federated weights, a sample of its own ordinary transactions and every label its reviewers have given. The next
    checkout is scored with the new weights. The label never leaves this node."
 4. Open **Records**: under Federated model the human-label count went up by one.
+5. Under the decision, **Export report** saves it as a PDF for people and a JSON record for machines. Both are built
+   from the trace on screen and pass a privacy scan first ([REPORTING.md](REPORTING.md)).
 If asked: weights are recomputed from the same base every time, so labels cannot compound; one label counts as 10% of the
 sample; no weight moves more than 3.0; a failed update never blocks the decision; labels survive a restart. Only the
 nine-feature federated model learns at once; the four specialists do not learn from labels yet.
 
 ### 8. Proof and numbers (20 s)
-- Second tab: our SuperNode registered on SuperGrid, federation @ac007/cardguard, and real runs of this AgentApp on Flower's
-  infrastructure (about 3 minutes per decision there, 6 to 12 s locally).
+- If the SuperGrid SuperNode is up, second tab: our SuperNode registered in the federation @ac007/cardguard, and runs of
+  this AgentApp on Flower's infrastructure. One decision ran there end to end on Sep 29 (about 3 minutes, mostly task
+  scheduling; 6 to 12 s locally). The local demo does not depend on it.
 - Training: IEEE-CIS, 590k real transactions, five product types as five merchants. Federated plus local fine-tuning never
   loses to a merchant alone and helps small merchants most (S: 0.525 vs 0.381). Never say federated beats every merchant.
 - Wording: say "shrinks PCI scope" and "card data never enters a model's context"; never claim a compliance status.

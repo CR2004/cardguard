@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useReducedMotion } from 'motion/react';
-import { api, enableDemoReviewerSession } from './api/client';
+import { api, enableDemoReviewerSession, reviewerToken } from './api/client';
 import type { Config } from './api/types';
 import type { StripeCardHandle } from './card/StripeCard';
 import { HumanReviewPanel } from './components/HumanReviewPanel';
@@ -17,6 +17,7 @@ import { TransactionPanel, type Inputs } from './components/TransactionPanel';
 import { SCENARIOS, type RingStep, type Scenario } from './investigation/scenarios';
 import { steps } from './investigation/steps';
 import { useInvestigation } from './investigation/useInvestigation';
+import { reportReady, type ReportSource } from './report/report';
 
 const first = SCENARIOS[0];
 const DEFAULT_INPUTS: Inputs = {
@@ -129,6 +130,12 @@ export function App() {
           : state.status === 'running' ? { tone: 'done' as const, text: 'Complete' }
             : { tone: 'idle' as const, text: 'Ready' };
   const showReview = Boolean(view.review && !view.review.decided);
+  // The report is offered once the outcome is on screen: every received event shown, the gate's rules revealed.
+  const exportSource: ReportSource | null = state.traceId && state.applied >= state.events.length && !reveal.evaluating
+    && reportReady(view)
+    ? { traceId: state.traceId, events: state.events, config, input: state.input, startedAt: state.startedAt,
+      rawCardShared: state.rawCardShared, forbidden: [state.ciphertext ?? '', reviewerToken()] }
+    : null;
 
   return (
     <div className="app">
@@ -172,8 +179,8 @@ export function App() {
           </div>
         </main>
         {showReview
-          ? <HumanReviewPanel view={view} demo={config.demo_controls} onDecide={inv.decide} />
-          : <Inspector view={view} reveal={reveal} gateKey={inv.gateKey} reduced={reduced} />}
+          ? <HumanReviewPanel view={view} demo={config.demo_controls} onDecide={inv.decide} exportSource={exportSource} />
+          : <Inspector view={view} reveal={reveal} gateKey={inv.gateKey} reduced={reduced} exportSource={exportSource} />}
       </div>
       <TraceTimeline events={state.events} applied={state.applied} />
       {drawer && <OperationsDrawer onClose={() => setDrawer(false)} refreshKey={state.runs} />}

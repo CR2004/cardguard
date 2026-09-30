@@ -1,0 +1,994 @@
+{
+  "report_version": "1.0",
+  "generator": "CardGuard investigation UI",
+  "decision_id": "jndlmgcbbaelcieb",
+  "created_at": "2026-09-30T01:55:16.726Z",
+  "checkout_sent_at": "2026-09-30T01:54:34.698Z",
+  "environment": {
+    "merchant_id": "cardguard-store",
+    "vertical": "W",
+    "stripe_mode": "test",
+    "demo_controls": true,
+    "bank_attestation": true,
+    "federation": "local-agent"
+  },
+  "transaction": {
+    "amount_cents": 6400,
+    "amount": "$64.00",
+    "currency": "USD",
+    "store": "store-a",
+    "buyer_country": "DE",
+    "buyer_region": "Europe",
+    "card_issuing_region": "North America",
+    "attack_mode": null
+  },
+  "verdict": {
+    "final": "decline",
+    "label": "Declined",
+    "decided_by": "The policy gate held it; a person made the final call.",
+    "human_final": true,
+    "gate_decision": "step_up",
+    "gate_label": "Human review",
+    "risk_score": 6,
+    "thresholds": {
+      "review": 3,
+      "decline": 8
+    },
+    "hard_stop": false,
+    "summary": "Sent to a human reviewer because of country mismatch: yes, model risk band: high, specialist stack band: high, travel check: implausible. A person then declined it.",
+    "explanation": {
+      "text": "Sent to a human reviewer because of country mismatch: yes, model risk band: high, specialist stack band: high, travel check: implausible.",
+      "kind": "template",
+      "author": "Template fallback"
+    }
+  },
+  "execution": {
+    "mode": "flower",
+    "flower_used": true,
+    "federation": "local-agent",
+    "run_id": "13487425443243353880",
+    "supernodes": [
+      "5574125614239010036"
+    ],
+    "grid_messages": 4,
+    "verdict_binding": "accepted",
+    "fallback": false,
+    "duration_ms": 37307.8,
+    "rounds": [
+      {
+        "round": 1,
+        "channel": "flower_grid",
+        "summary": "11 banded facts reached the coordinator and were verified on arrival.",
+        "asked": [
+          "Stripe (card checks)",
+          "Bank attestation",
+          "Merchant (store)",
+          "Network memory"
+        ],
+        "trigger": null,
+        "effect": null,
+        "question": {
+          "purpose": "fraud-risk",
+          "bytes": 57,
+          "supernodes": 1
+        },
+        "reply": {
+          "status": "verified",
+          "bytes": 364,
+          "latency_ms": 1812,
+          "reason": null
+        },
+        "facts": [
+          {
+            "fact": "card_funding",
+            "label": "Funding",
+            "value": "credit",
+            "party": "stripe",
+            "round": 1,
+            "status": "verified",
+            "conflict": false,
+            "risk_points": null
+          },
+          {
+            "fact": "cvc_check",
+            "label": "CVC check",
+            "value": "pass",
+            "party": "stripe",
+            "round": 1,
+            "status": "verified",
+            "conflict": false,
+            "risk_points": null
+          },
+          {
+            "fact": "issuer_behavior",
+            "label": "Bank: behaviour",
+            "value": "low",
+            "party": "bank",
+            "round": 1,
+            "status": "verified",
+            "conflict": true,
+            "risk_points": null
+          },
+          {
+            "fact": "issuer_recent_declines",
+            "label": "Bank: recent declines",
+            "value": "none",
+            "party": "bank",
+            "round": 1,
+            "status": "verified",
+            "conflict": false,
+            "risk_points": null
+          },
+          {
+            "fact": "amount_band",
+            "label": "Amount",
+            "value": "low",
+            "party": "store",
+            "round": 1,
+            "status": "verified",
+            "conflict": false,
+            "risk_points": null
+          },
+          {
+            "fact": "country_mismatch",
+            "label": "Country mismatch",
+            "value": "yes",
+            "party": "store",
+            "round": 1,
+            "status": "verified",
+            "conflict": true,
+            "risk_points": 2
+          },
+          {
+            "fact": "model_risk_band",
+            "label": "Federated model",
+            "value": "high",
+            "party": "store",
+            "round": 1,
+            "status": "verified",
+            "conflict": false,
+            "risk_points": 2
+          },
+          {
+            "fact": "new_customer",
+            "label": "New customer",
+            "value": "no",
+            "party": "store",
+            "round": 1,
+            "status": "verified",
+            "conflict": false,
+            "risk_points": null
+          },
+          {
+            "fact": "specialist_stack_band",
+            "label": "Specialist models",
+            "value": "high",
+            "party": "store",
+            "round": 1,
+            "status": "verified",
+            "conflict": false,
+            "risk_points": 2
+          },
+          {
+            "fact": "velocity_band",
+            "label": "Velocity 24 h",
+            "value": "low",
+            "party": "store",
+            "round": 1,
+            "status": "verified",
+            "conflict": false,
+            "risk_points": null
+          },
+          {
+            "fact": "network_velocity_band",
+            "label": "Network velocity",
+            "value": "low",
+            "party": "network",
+            "round": 1,
+            "status": "verified",
+            "conflict": false,
+            "risk_points": null
+          }
+        ]
+      },
+      {
+        "round": 2,
+        "channel": "flower_grid",
+        "summary": "The bank answered one question: travel_check = implausible.",
+        "asked": [
+          "Bank attestation (through the store’s node)"
+        ],
+        "trigger": "store: the buyer is outside the card's country; bank: an ordinary cardholder, card checks pass",
+        "question": {
+          "purpose": "travel-check",
+          "bytes": 59,
+          "supernodes": 1
+        },
+        "reply": {
+          "status": "verified",
+          "bytes": 122,
+          "latency_ms": 4132,
+          "reason": null
+        },
+        "effect": "Round 2: the bank finds the travel implausible, so a person must look",
+        "facts": [
+          {
+            "fact": "travel_check",
+            "label": "Travel",
+            "value": "implausible",
+            "party": "bank",
+            "round": 2,
+            "status": "verified",
+            "conflict": false,
+            "risk_points": null
+          }
+        ]
+      }
+    ]
+  },
+  "evidence": {
+    "facts": [
+      {
+        "fact": "card_funding",
+        "label": "Funding",
+        "value": "credit",
+        "party": "stripe",
+        "round": 1,
+        "status": "verified",
+        "conflict": false,
+        "risk_points": null
+      },
+      {
+        "fact": "cvc_check",
+        "label": "CVC check",
+        "value": "pass",
+        "party": "stripe",
+        "round": 1,
+        "status": "verified",
+        "conflict": false,
+        "risk_points": null
+      },
+      {
+        "fact": "issuer_behavior",
+        "label": "Bank: behaviour",
+        "value": "low",
+        "party": "bank",
+        "round": 1,
+        "status": "verified",
+        "conflict": true,
+        "risk_points": null
+      },
+      {
+        "fact": "issuer_recent_declines",
+        "label": "Bank: recent declines",
+        "value": "none",
+        "party": "bank",
+        "round": 1,
+        "status": "verified",
+        "conflict": false,
+        "risk_points": null
+      },
+      {
+        "fact": "amount_band",
+        "label": "Amount",
+        "value": "low",
+        "party": "store",
+        "round": 1,
+        "status": "verified",
+        "conflict": false,
+        "risk_points": null
+      },
+      {
+        "fact": "country_mismatch",
+        "label": "Country mismatch",
+        "value": "yes",
+        "party": "store",
+        "round": 1,
+        "status": "verified",
+        "conflict": true,
+        "risk_points": 2
+      },
+      {
+        "fact": "model_risk_band",
+        "label": "Federated model",
+        "value": "high",
+        "party": "store",
+        "round": 1,
+        "status": "verified",
+        "conflict": false,
+        "risk_points": 2
+      },
+      {
+        "fact": "new_customer",
+        "label": "New customer",
+        "value": "no",
+        "party": "store",
+        "round": 1,
+        "status": "verified",
+        "conflict": false,
+        "risk_points": null
+      },
+      {
+        "fact": "specialist_stack_band",
+        "label": "Specialist models",
+        "value": "high",
+        "party": "store",
+        "round": 1,
+        "status": "verified",
+        "conflict": false,
+        "risk_points": 2
+      },
+      {
+        "fact": "velocity_band",
+        "label": "Velocity 24 h",
+        "value": "low",
+        "party": "store",
+        "round": 1,
+        "status": "verified",
+        "conflict": false,
+        "risk_points": null
+      },
+      {
+        "fact": "network_velocity_band",
+        "label": "Network velocity",
+        "value": "low",
+        "party": "network",
+        "round": 1,
+        "status": "verified",
+        "conflict": false,
+        "risk_points": null
+      },
+      {
+        "fact": "travel_check",
+        "label": "Travel",
+        "value": "implausible",
+        "party": "bank",
+        "round": 2,
+        "status": "verified",
+        "conflict": false,
+        "risk_points": null
+      }
+    ],
+    "parties": [
+      {
+        "party": "stripe",
+        "level": "low",
+        "points": 0,
+        "hard": false,
+        "floor": false,
+        "facts": {
+          "card_funding": "credit",
+          "cvc_check": "pass"
+        }
+      },
+      {
+        "party": "bank",
+        "level": "medium",
+        "points": 0,
+        "hard": false,
+        "floor": true,
+        "facts": {
+          "issuer_behavior": "low",
+          "issuer_recent_declines": "none",
+          "travel_check": "implausible"
+        }
+      },
+      {
+        "party": "store",
+        "level": "high",
+        "points": 6,
+        "hard": false,
+        "floor": false,
+        "facts": {
+          "amount_band": "low",
+          "country_mismatch": "yes",
+          "model_risk_band": "high",
+          "new_customer": "no",
+          "specialist_stack_band": "high",
+          "velocity_band": "low"
+        }
+      },
+      {
+        "party": "network",
+        "level": "low",
+        "points": 0,
+        "hard": false,
+        "floor": false,
+        "facts": {
+          "network_velocity_band": "low"
+        }
+      }
+    ]
+  },
+  "models": {
+    "jev": {
+      "used": true,
+      "status": "voted",
+      "vote": "step_up",
+      "confidence": 0.62,
+      "raised": false
+    },
+    "endeavor": {
+      "used": false,
+      "status": "template",
+      "model": null,
+      "via": null,
+      "fallback_reason": "unavailable"
+    }
+  },
+  "policy_gate": {
+    "reached": true,
+    "decision": "step_up",
+    "label": "Human review",
+    "decided_by": "rules+jev",
+    "score": 6,
+    "thresholds": {
+      "review": 3,
+      "decline": 8
+    },
+    "rules": [
+      {
+        "rule": "evidence",
+        "state": "pass",
+        "text": "Evidence complete: one verified fact set for this decision"
+      },
+      {
+        "rule": "privacy",
+        "state": "pass",
+        "text": "Privacy check passed: closed vocabulary, no card-like values"
+      },
+      {
+        "rule": "hard_stop",
+        "state": "pass",
+        "text": "No hard stop: the CVC check did not fail"
+      },
+      {
+        "rule": "score",
+        "state": "info",
+        "text": "Risk points 6: review from 3, decline from 8"
+      },
+      {
+        "rule": "round_2",
+        "state": "warn",
+        "text": "Round 2: the bank finds the travel implausible, so a person must look"
+      },
+      {
+        "rule": "rules",
+        "state": "warn",
+        "text": "Auto-decline line not reached: rules send it to a person"
+      },
+      {
+        "rule": "model",
+        "state": "info",
+        "text": "Model vote: step up at 62% confidence; the more cautious vote wins"
+      }
+    ],
+    "fired": [
+      {
+        "rule": "round_2",
+        "state": "warn",
+        "text": "Round 2: the bank finds the travel implausible, so a person must look"
+      },
+      {
+        "rule": "rules",
+        "state": "warn",
+        "text": "Auto-decline line not reached: rules send it to a person"
+      }
+    ],
+    "contributions": [
+      {
+        "fact": "country_mismatch=yes",
+        "party": "store",
+        "points": 2
+      },
+      {
+        "fact": "model_risk_band=high",
+        "party": "store",
+        "points": 2
+      },
+      {
+        "fact": "specialist_stack_band=high",
+        "party": "store",
+        "points": 2
+      },
+      {
+        "fact": "travel_check=implausible",
+        "party": "bank",
+        "points": 0
+      }
+    ],
+    "stopped_reason": null
+  },
+  "human_review": {
+    "required": true,
+    "review_id": "f2e3a6aa",
+    "status": "decided",
+    "decision": "decline",
+    "final_decision_by_human": true,
+    "opened_at_ms": 29595.8,
+    "decided_at_ms": 37295.5
+  },
+  "payment": {
+    "processor": "stripe",
+    "mode": "test",
+    "state": "Voided",
+    "note": "Nothing charged",
+    "status": "voided",
+    "approved": false,
+    "charged": false,
+    "payment_intent_id": null,
+    "outcome": "declined_by_human"
+  },
+  "participants": [
+    {
+      "component": "Stripe (card checks)",
+      "role": "Card checks returned as bands: CVC pass, funding credit",
+      "status": "Answered"
+    },
+    {
+      "component": "Merchant (store)",
+      "role": "Banded its own order history locally; disclosed banded facts only",
+      "status": "Disclosed"
+    },
+    {
+      "component": "Bank attestation",
+      "role": "Attested cardholder bands from its private history; answered the round-2 travel check",
+      "status": "Answered"
+    },
+    {
+      "component": "Coordinator (Flower AgentApp)",
+      "role": "Ran as a Flower AgentApp on local-agent; asked the store's SuperNode over Grid and re-verified every reply",
+      "status": "Verified"
+    },
+    {
+      "component": "Network memory",
+      "role": "Same card reference checked across stores; velocity low",
+      "status": "Answered"
+    },
+    {
+      "component": "Jev (TypeSafe)",
+      "role": "Risk advisory vote: step up at 62% confidence; it can only add caution",
+      "status": "Advisory"
+    },
+    {
+      "component": "Policy Gate",
+      "role": "Fixed rules held it for a person",
+      "status": "Final authority: Human review"
+    },
+    {
+      "component": "Human reviewer",
+      "role": "Made the final call: declined",
+      "status": "Final decision"
+    }
+  ],
+  "security": {
+    "raw_card_data_shared": 0,
+    "raw_card_data_basis": "card numbers the coordinator has seen, as counted by the merchant node’s ledger (node-wide, not only this decision)",
+    "raw_card_history_shared": 0,
+    "raw_card_history_basis": "verified values that crossed a boundary outside the closed band vocabulary",
+    "privacy_safe_facts_crossed": 12,
+    "bytes_across_boundaries": 629,
+    "off_vocabulary_values": 0,
+    "rejected_messages": [],
+    "redacted_trace_steps": 0,
+    "export_redactions": []
+  },
+  "trace": [
+    {
+      "amount_cents": 6400,
+      "attack": null,
+      "bytes": 27,
+      "dst": "store",
+      "federation": "local-agent",
+      "kind": "payment.started",
+      "processor": "stripe",
+      "seq": 0,
+      "src": "buyer",
+      "store": "store-a",
+      "t": 0
+    },
+    {
+      "detail": "payment-method id, looked up in Stripe",
+      "dst": "stripe",
+      "kind": "processor.verify.request",
+      "seq": 1,
+      "src": "store",
+      "t": 0
+    },
+    {
+      "dst": "store",
+      "evidence": {
+        "card_funding": "credit",
+        "cvc_check": "pass"
+      },
+      "kind": "processor.verify.reply",
+      "latency_ms": 892,
+      "seq": 2,
+      "src": "stripe",
+      "status": "ok",
+      "t": 892.3
+    },
+    {
+      "detail": "pseudonymous card reference and issuing region",
+      "dst": "bank",
+      "kind": "bank.attest.request",
+      "seq": 3,
+      "src": "store",
+      "t": 892.3
+    },
+    {
+      "dst": "store",
+      "evidence": {
+        "issuer_behavior": "low",
+        "issuer_recent_declines": "none"
+      },
+      "kind": "bank.attest.reply",
+      "latency_ms": 3,
+      "seq": 4,
+      "src": "bank",
+      "status": "ok",
+      "t": 895.5
+    },
+    {
+      "evidence": {
+        "amount_band": "low",
+        "country_mismatch": "yes",
+        "model_risk_band": "high",
+        "new_customer": "no",
+        "specialist_stack_band": "high",
+        "velocity_band": "low"
+      },
+      "kind": "store.facts",
+      "seq": 5,
+      "src": "store",
+      "t": 895.8
+    },
+    {
+      "dst": "coordinator",
+      "federation": "local-agent",
+      "kind": "flower.run.request",
+      "seq": 6,
+      "src": "store",
+      "t": 895.8
+    },
+    {
+      "dst": "coordinator",
+      "kind": "flower.run.started",
+      "run_id": "13487425443243353880",
+      "seq": 7,
+      "src": "store",
+      "t": 905
+    },
+    {
+      "kind": "coord.nodes",
+      "nodes": [
+        "5574125614239010036"
+      ],
+      "seq": 8,
+      "src": "coordinator",
+      "t": 1918.8
+    },
+    {
+      "bytes": 57,
+      "dst": "store",
+      "kind": "coord.question",
+      "nodes": [
+        "5574125614239010036"
+      ],
+      "purpose": "fraud-risk",
+      "round": 1,
+      "seq": 9,
+      "src": "coordinator",
+      "t": 1919.3,
+      "via": "flower"
+    },
+    {
+      "detail": "the store's SuperNode read this decision's guarded facts from its own node",
+      "kind": "node.read",
+      "node": "5574125614239010036",
+      "seq": 10,
+      "src": "store",
+      "status": "disclosed",
+      "t": 3116.3
+    },
+    {
+      "bytes": 364,
+      "dst": "coordinator",
+      "evidence": {
+        "amount_band": "low",
+        "card_funding": "credit",
+        "country_mismatch": "yes",
+        "cvc_check": "pass",
+        "issuer_behavior": "low",
+        "issuer_recent_declines": "none",
+        "model_risk_band": "high",
+        "new_customer": "no",
+        "specialist_stack_band": "high",
+        "velocity_band": "low"
+      },
+      "kind": "coord.reply",
+      "latency_ms": 1812,
+      "node": "5574125614239010036",
+      "reason": null,
+      "round": 1,
+      "seq": 11,
+      "src": "store",
+      "status": "verified",
+      "t": 3935.9,
+      "via": "flower"
+    },
+    {
+      "dst": "coordinator",
+      "evidence": {
+        "network_velocity_band": "low"
+      },
+      "kind": "coord.network",
+      "seq": 12,
+      "src": "network",
+      "t": 3936.1
+    },
+    {
+      "kind": "coord.conflict",
+      "reason": "store: the buyer is outside the card's country; bank: an ordinary cardholder, card checks pass",
+      "round": 2,
+      "seq": 13,
+      "src": "coordinator",
+      "t": 3936.4
+    },
+    {
+      "bytes": 59,
+      "dst": "store",
+      "kind": "coord.question",
+      "nodes": [
+        "5574125614239010036"
+      ],
+      "purpose": "travel-check",
+      "round": 2,
+      "seq": 14,
+      "src": "coordinator",
+      "t": 3937,
+      "via": "flower"
+    },
+    {
+      "detail": "the store's SuperNode passes the question to the bank over the signed channel",
+      "kind": "node.read",
+      "node": "5574125614239010036",
+      "round": 2,
+      "seq": 15,
+      "src": "store",
+      "status": "relayed",
+      "t": 7126.6
+    },
+    {
+      "detail": "signed question: card reference, issuing region, buyer region",
+      "dst": "bank",
+      "kind": "bank.travel.request",
+      "round": 2,
+      "seq": 16,
+      "src": "store",
+      "t": 7126.7
+    },
+    {
+      "dst": "store",
+      "evidence": {
+        "travel_check": "implausible"
+      },
+      "kind": "bank.travel.reply",
+      "latency_ms": 1,
+      "round": 2,
+      "seq": 17,
+      "src": "bank",
+      "status": "ok",
+      "t": 7127.8
+    },
+    {
+      "bytes": 122,
+      "dst": "coordinator",
+      "evidence": {
+        "travel_check": "implausible"
+      },
+      "kind": "coord.reply",
+      "latency_ms": 4132,
+      "node": "5574125614239010036",
+      "reason": null,
+      "round": 2,
+      "seq": 18,
+      "src": "store",
+      "status": "verified",
+      "t": 7957.1,
+      "via": "flower"
+    },
+    {
+      "contributions": [
+        {
+          "fact": "country_mismatch=yes",
+          "party": "store",
+          "points": 2
+        },
+        {
+          "fact": "model_risk_band=high",
+          "party": "store",
+          "points": 2
+        },
+        {
+          "fact": "specialist_stack_band=high",
+          "party": "store",
+          "points": 2
+        },
+        {
+          "fact": "travel_check=implausible",
+          "party": "bank",
+          "points": 0
+        }
+      ],
+      "decided_by": "rules+jev",
+      "decision": "step_up",
+      "dst": "gate",
+      "explanation": {
+        "by": "template",
+        "error": "InternalServerError",
+        "text": "Sent to a human reviewer because of country mismatch: yes, model risk band: high, specialist stack band: high, travel check: implausible.",
+        "via": ""
+      },
+      "jev": {
+        "action": "step_up",
+        "confidence": 0.62,
+        "raised": false
+      },
+      "kind": "gate.decision",
+      "lines": [
+        {
+          "rule": "evidence",
+          "state": "pass",
+          "text": "Evidence complete: one verified fact set for this decision"
+        },
+        {
+          "rule": "privacy",
+          "state": "pass",
+          "text": "Privacy check passed: closed vocabulary, no card-like values"
+        },
+        {
+          "rule": "hard_stop",
+          "state": "pass",
+          "text": "No hard stop: the CVC check did not fail"
+        },
+        {
+          "rule": "score",
+          "state": "info",
+          "text": "Risk points 6: review from 3, decline from 8"
+        },
+        {
+          "rule": "round_2",
+          "state": "warn",
+          "text": "Round 2: the bank finds the travel implausible, so a person must look"
+        },
+        {
+          "rule": "rules",
+          "state": "warn",
+          "text": "Auto-decline line not reached: rules send it to a person"
+        },
+        {
+          "rule": "model",
+          "state": "info",
+          "text": "Model vote: step up at 62% confidence; the more cautious vote wins"
+        }
+      ],
+      "parties": [
+        {
+          "facts": {
+            "card_funding": "credit",
+            "cvc_check": "pass"
+          },
+          "floor": false,
+          "hard": false,
+          "level": "low",
+          "party": "stripe",
+          "points": 0
+        },
+        {
+          "facts": {
+            "issuer_behavior": "low",
+            "issuer_recent_declines": "none",
+            "travel_check": "implausible"
+          },
+          "floor": true,
+          "hard": false,
+          "level": "medium",
+          "party": "bank",
+          "points": 0
+        },
+        {
+          "facts": {
+            "amount_band": "low",
+            "country_mismatch": "yes",
+            "model_risk_band": "high",
+            "new_customer": "no",
+            "specialist_stack_band": "high",
+            "velocity_band": "low"
+          },
+          "floor": false,
+          "hard": false,
+          "level": "high",
+          "party": "store",
+          "points": 6
+        },
+        {
+          "facts": {
+            "network_velocity_band": "low"
+          },
+          "floor": false,
+          "hard": false,
+          "level": "low",
+          "party": "network",
+          "points": 0
+        }
+      ],
+      "round_2": true,
+      "score": 6,
+      "seq": 19,
+      "src": "coordinator",
+      "t": 28084.7,
+      "via": "flower"
+    },
+    {
+      "kind": "flower.run.finished",
+      "run_id": "13487425443243353880",
+      "seq": 20,
+      "t": 29593.5
+    },
+    {
+      "detail": "bound to the SuperNode that read our facts",
+      "dst": "store",
+      "kind": "verdict.received",
+      "node": "5574125614239010036",
+      "seq": 21,
+      "src": "coordinator",
+      "status": "accepted",
+      "t": 29595.7
+    },
+    {
+      "detail": "automation paused: the payment is held until a person decides",
+      "dst": "human",
+      "kind": "review.opened",
+      "review_id": "f2e3a6aa",
+      "seq": 22,
+      "src": "gate",
+      "t": 29595.8
+    },
+    {
+      "charged": false,
+      "kind": "outcome",
+      "outcome": "needs_review",
+      "seq": 23,
+      "t": 29595.8
+    },
+    {
+      "action": "decline",
+      "dst": "store",
+      "kind": "review.decided",
+      "review_id": "f2e3a6aa",
+      "seq": 24,
+      "src": "human",
+      "t": 37295.5
+    },
+    {
+      "approve": false,
+      "auth_code": null,
+      "dst": "stripe",
+      "kind": "payment.settled",
+      "processor": "stripe",
+      "reason": null,
+      "seq": 25,
+      "src": "store",
+      "status": "voided",
+      "t": 37307.8
+    },
+    {
+      "charged": false,
+      "kind": "outcome",
+      "outcome": "declined_by_human",
+      "seq": 26,
+      "t": 37307.8
+    }
+  ]
+}
