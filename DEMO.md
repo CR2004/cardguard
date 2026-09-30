@@ -156,7 +156,7 @@ nine-feature federated model learns at once; the four specialists do not learn f
   infrastructure (about 3 minutes per decision there, 6 to 12 s locally).
 - Training: IEEE-CIS, 590k real transactions, five product types as five merchants. Federated plus local fine-tuning never
   loses to a merchant alone and helps small merchants most (S: 0.525 vs 0.381). Never say federated beats every merchant.
-- Wording: "shrinks PCI scope" and "card data never enters a model's context". Never "PCI compliant".
+- Wording: say "shrinks PCI scope" and "card data never enters a model's context"; never claim a compliance status.
 
 ## If something breaks
 

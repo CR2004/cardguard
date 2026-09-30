@@ -1,449 +1,287 @@
-# CardGuard: card-payment risk decisions by collaborating agents, where card data never enters any model's context
+# CardGuard
 
-Built for the Flower Collaborative Agent Hackathon (Stanford, Sep 29 2026).
+**Card-payment risk decisions by collaborating agents on Flower, where card data never enters any model's context.**
 
-Merchants cannot fight fraud together because the one thing they would have to share is the card.
-CardGuard is a decision layer between "card entered" and "money moves": the card goes from Stripe
-Elements to Stripe and nobody else ever sees it; the merchant reduces the payment to eight banded
-facts (nine when the specialist model file is present); agents on different Flower nodes decide together on those facts; a human approves anything
-risky; every disclosure is logged; and a fraud model is trained across merchants with Flower so only
-weights ever leave a node. Stripe moves the money. We decide whether it should.
+Built for the Flower Collaborative Agent Hackathon, Stanford, September 29 2026.
 
-Say "shrinks PCI scope" or "card data never enters a model's context". Never "PCI compliant".
+- Flower Hub app: `@ac007/cardguard` (this repository is the app: `flwr app publish .`)
+- Four-minute demo walkthrough: [DEMO.md](DEMO.md)
+- How the models are trained, in plain words: [TRAINING.md](TRAINING.md)
 
-## Status (Sep 29)
+## The problem
 
-**Done and verified live on a laptop:** Stripe test mode as the processor; wire guard and
-hash-chained ledger; coordinator (rules + Jev vote, hard CVC decline); Flower AgentApp with
-coordinator and merchant roles over Grid, launched from checkout, verdicts bound to the node that
-fetched the facts; fraud-ring detection across stores with memory across Flower runs; human review
-with a reviewer credential; chargebacks and reviews that retrain the network (federated round +
-local fine-tune); join-the-network command; differential privacy with a reported budget; dispute
-evidence agent; live prompt-injection demo contained by the guard; real-data training on IEEE-CIS;
-194 offline tests (153 pass in a plain environment; 4 tests and 3 test files need `flwr`); two code reviews (dead code, security) applied.
+Fraud is a network problem. A card-testing ring looks like one ordinary purchase at each store it hits, and a stolen card
+looks normal to a merchant who has never seen its owner. The parties who could catch it together, several merchants and
+the card's bank, cannot pool what they know, because the one thing that would link their records is the card itself.
+Sharing card numbers with each other, or with an AI model, is exactly what payment security forbids.
 
-**Left, in order:** review and merge the `specialists-experiment` pull request (checklist below); Stripe test keys and the Flower model key in `.env`;
-`flwr login supergrid` and the SuperGrid run (needs a SuperNode we control); personalisation at
-merchant startup; UI polish (the new review panel has not been opened in a browser); Flower Hub publish; backup video; pitch.
+## What CardGuard does
 
-**On branch `specialists-experiment` (pushed, not yet merged): fraud specialists and human-in-the-loop upgrades.**
-- *Specialists.* Four small models, each seeing one signal family (transaction, identity, geography, behavior), are
-  trained with FedAvg across the five merchants, fine-tuned on each merchant's own rows, and stacked into one new
-  banded fact, `specialist_stack_band`, which the merchant node adds when `specialist_weights.json` exists. Level with
-  the original model overall (AUC 0.774 against 0.768) and better at the small merchants.
-- *Human in the loop.* Soft declines get a second look; a human's opinion has a reason from a fixed list, is
-  audited in a hash-chained log, and becomes a saved training label.
-- Scoreboard of what is live: [Scoreboard](#fraud-specialists-four-models-trained-merchant-by-merchant). Details, the live wiring and the plan: [Fraud specialists](#fraud-specialists-four-models-trained-merchant-by-merchant).
-  How the training and the federation work, in plain words: [TRAINING.md](TRAINING.md).
+CardGuard is a decision layer between "card entered" and "money moves". Several parties' agents decide one payment
+together, and none of them ever sees the card:
 
-**Before merging that branch:**
-1. Run `python -m pytest -q` in the project `.venv` (with `flwr`). On the machine that built the branch `flwr`
-   was missing, so 4 tests and 3 test files could not run; everything else passes.
-2. Build the UI (`pnpm --dir web install && pnpm --dir web build`), start `python run_demo.py`, and try a queued
-   review in the browser. The reason and note fields are API-only: the React review panel does not send them yet.
-3. Decide `SECOND_LOOK_ON_DECLINE`. By default (off) approve and decline are final and only a step-up waits for
-   a human; `SECOND_LOOK_ON_DECLINE=1` makes a soft decline wait for a human too.
-4. `specialist_weights.json` is trained offline on the IEEE-CIS verticals and committed. Regenerate it with
-   `python -m cardguard.specialists.export` if the features change; delete it (or set `SPECIALIST_WEIGHTS=none`) to
-   switch the specialists off.
+- **The card goes from Stripe Elements straight to Stripe.** The merchant receives a `pm_...` payment-method id, never
+  the number, expiry or CVC. Stripe is the only payment rail and moves the money.
+- **Each party reduces what it knows to banded facts.** "Amount: high for this store", "bank sees an ordinary
+  cardholder", "card seen at 3 stores in 10 minutes". Only words from a closed vocabulary cross a node boundary, and a
+  wire guard refuses anything else.
+- **A coordinator agent on Flower asks the questions**, re-verifies every answer, and asks one follow-up question only
+  when two parties disagree.
+- **Fixed rules in code make the decision.** Models vote or explain; they never decide alone.
+- **A person decides the uncertain cases**, and each human decision retrains the fraud model on that node at once.
+- **Every disclosure and every blocked leak is logged** in a hash-chained ledger that anyone can re-verify.
 
-## Quick start
+This shrinks PCI scope rather than certifying anything: it is the same shape as the hosted card fields processors
+already use. What we add is the multi-agent fraud decision around it, a fraud model trained across merchants with
+federated learning, and a privacy boundary you can verify.
 
-Python 3.11 or 3.12, [uv](https://docs.astral.sh/uv/).
+## Humans and agents, together
 
-    git clone https://github.com/CR2004/cardguard.git && cd cardguard
-    uv venv --python 3.12 .venv && uv pip install --python .venv/bin/python -r requirements.txt
-    source .venv/bin/activate
-    python -m pytest -q                              # offline, seconds
-    pnpm --dir web install && pnpm --dir web build   # the investigation UI (web/dist), served by the merchant node
+We are building the part of a payment that happens between "the buyer pressed Pay" and "the money moved": a shared
+fraud decision. Its job is to stop fraudulent charges before they happen, and to learn from the ones that get through,
+without any party handing over card data.
 
-    cp .env.example .env                             # then fill in: STRIPE_SECRET_KEY, STRIPE_PUBLISHABLE_KEY (test keys,
-                                                     # required), FLWR_MODEL_API_KEY (live explanations), TYPESAFE_API_KEY (Jev)
-    python run_demo.py                               # bank attestation :4243 + merchant http://127.0.0.1:4242;
-                                                     # prints the reviewer token
+The work is split by what each side is good at.
 
-**Decisions over Flower** (the multi-agent path), three terminals:
+**Agents gather evidence, at machine speed, each from its own private data.** When a checkout starts, the merchant agent
+describes the purchase in bands ("high for this store", "first time we see this card"), the bank node describes its
+cardholder ("an ordinary customer", "no recent declines"), and the coordinator agent adds what only it can see across
+merchants ("this card was at two other stores in the last ten minutes"). If the store and the bank disagree, say the
+buyer is abroad but the cardholder looks ordinary, the coordinator asks the bank one more question instead of guessing.
+All of this takes seconds, and no agent ever learns another party's raw data.
 
-    mkdir -p ~/.flwr && printf '[superlink.local-agent]\naddress = "127.0.0.1:8010"\ninsecure = true\n' > ~/.flwr/config.toml
-    python scripts/run_superlink.py                  # SuperLink (Control API :8010, Fleet API :9092)
-    python scripts/run_supernode.py                  # the merchant's SuperNode
-    python run_demo.py --federation local-agent --stores store-a,store-b,store-c
+**Code decides the clear cases.** Fixed rules turn the evidence into approve, decline or hold. A clean purchase is charged
+without anyone waiting. A card that fails its security check is declined on the spot. A model can vote to be more careful,
+but it can never approve on its own, and an approval the model is unsure about is not allowed through automatically.
 
-**Real data** (what the shipped model was trained on): put IEEE-CIS `train_transaction.csv` in
-`datasets/` (see datasets/README.md), then `python -m cardguard.data.ieee_cis` and
-`python -m cardguard.training.flower_app`. Without it, training and tests use synthetic data.
-For the specialist models run `python -m cardguard.specialists.export` (writes `specialist_weights.json`).
+**People decide the uncertain cases.** When the evidence is mixed, the payment is held and nothing is charged. A
+credentialed reviewer sees why it was held, in the gate's own words, and approves or declines it. The reviewer sees the
+same bands the agents saw, never the card.
+
+**People teach the agents.** Every human decision becomes a training label on that merchant's node, and the node's fraud
+model updates inside the same request, so the next checkout already reflects it. When a fraudulent charge slips through
+and comes back as a chargeback, it becomes a label the same way, and a dispute agent drafts the chargeback response for a
+person to send. A federated round then spreads the lesson to the other merchants through model weights, never through
+transactions.
+
+**Everyone can check the work.** Every fact that crossed a boundary, and every attempt that was blocked, is in a
+hash-chained ledger. The screen shows, for each payment, how many card numbers were shared (zero), which party
+contributed which fact, and which rule decided.
+
+**Why not just Stripe Radar?** Radar decides with what Stripe sees. CardGuard adds what Stripe does not: the merchant's own
+history, the issuing bank's view of its cardholder, and sightings across merchants, combined without sharing a card
+number, a raw history or a model score. It runs beside the processor, not instead of it.
+
+## The agents
+
+| Agent | Runs on | Knows privately | Shares |
+|---|---|---|---|
+| **Merchant agent** (one per store) | A Flower SuperNode beside the merchant node | Exact amount, buyer region, this card's history at the store, two fraud models' raw scores | Seven banded facts, two model bands, and a letters-only card reference |
+| **Bank attestation node** | Its own process, signed requests only | Synthetic cardholder history: last in-person city and time, recent declines | Two bands in round 1; one word in round 2 |
+| **Coordinator agent** | A Flower AgentApp on the SuperLink | Only the bands it received | The verdict |
+| **Network memory** | The coordinator's state, kept across Flower runs | Which card reference each store saw in the last 10 minutes | One band: `network_velocity_band` |
+| **Policy gate** | Code, no model | Nothing | The decision: approve, hold for a person, or decline |
+| **Human reviewer** | The merchant's review panel, credentialed | Their judgement | A label that never leaves the node |
+| **Jev** (TypeSafe) | Called by the coordinator | Banded facts only | A vote, which can only add caution |
+| **Endeavor** (Flower-served model) | Called by the coordinator through the Flower runtime | The verdict and its recognised reasons only | One sentence of explanation for people |
 
 ## How a payment flows
 
-1. **Card entry.** Stripe Elements sends the number, expiry and CVC to Stripe. The store receives a
-   payment-method token and posts only that.
-2. **Bank attestation (round 1).** The merchant asks the bank attestation node, over a signed local
-   channel, about the card's pseudonymous reference and coarse issuing region. The bank answers two
-   bands (`issuer_behavior`, `issuer_recent_declines`) from synthetic private cardholder history that
-   never leaves it. The bank never sees a card and never moves money; Stripe is the only payment rail.
-   The card reference is a keyed hash of Stripe's TEST card fingerprint: a demo correlation, not an
-   issuer-network identity protocol.
-3. **Facts.** The merchant asks Stripe for the card's metadata and turns it, plus its own history,
-   into eight banded facts: amount relative to its own order sizes, country mismatch, funding, CVC
-   result, velocity, first sighting, and the federated model's risk band. The model scores nine raw
-   local features; only its band leaves the node. When `specialist_weights.json` exists, four small
-   one-signal-family models also score the checkout and their stacked band, `specialist_stack_band`, joins
-   the facts (their four individual bands stay in the local audit note).
-4. **Wire guard.** The facts pass through a ledger that allows one disclosure per decision, limits
-   disclosures per card, and rejects unknown keys, off-vocabulary values, oversized strings and
-   card-like digit runs. Everything is logged in a hash-chained ledger.
-5. **Agents on Flower.** The merchant starts a Flower run. The coordinator agent on the SuperLink asks
-   the merchant agent on the SuperNode a purpose-tagged question over Grid; the merchant agent fetches
-   the guarded facts from its own node and replies; the coordinator re-guards the reply, adds its own
-   fact (how many merchants saw this card in the last ten minutes), runs the rules and Jev's vote in
-   code, hard-declines a failed CVC, sends low-confidence approvals to a human, asks Endeavor for one
-   sentence, and emits the verdict. The merchant accepts it only from its own node, for its own decision.
-6. **Round 2, only on disagreement.** When the store sees a buyer outside the card's country while the
-   card checks pass and the bank sees an ordinary cardholder, the coordinator sends one targeted
-   question over Grid to the node that answered round 1; that node relays it to the bank, which checks
-   its private history locally and returns only `travel_check` (plausible / implausible / unknown).
-   `implausible` puts a person in the loop and never declines on its own; the model never sees it; a
-   round 2 with no verified answer holds the payment for a person.
-7. **Outcome.** Approve confirms a Stripe test-mode PaymentIntent. Step-up waits for a credentialed
-   human, and so does a soft decline (a second look; a failed CVC stays a final decline). Decline voids. The
-   human gives a reason from a fixed list, which is written to a tamper-evident audit. Human decisions and
-   chargebacks become labels on the node, saved to disk, and the fraud model **learns from each one at once**
-   (the reply shows this payment's model band before and after); "Retrain" also spreads it through a federated
-   round; a dispute agent drafts the chargeback response for a human.
+```
+ Buyer --card--> Stripe Elements --> Stripe                       (the card stops here)
+                                       | pm_ id + card checks
+                                       v
+   Bank  <--signed: card reference + coarse region--  Merchant node  (bands its own history)
+   Bank  --signed: issuer_behavior, recent_declines-->     |
+                                                           | SuperNode: merchant agent
+                          Flower Grid: {purpose, decision_id} / banded facts
+                                                           |
+                                                SuperLink: coordinator AgentApp
+                                          re-guards the reply, adds network memory,
+                                          round 2 only on disagreement (travel_check),
+                                          rules + Jev vote -> policy gate -> Endeavor sentence
+                                                           |
+                  verdict, accepted only from the node that supplied the facts
+                                                           v
+                  approve: Stripe charges | hold: a person decides | decline: voided
+```
+
+1. **Card entry.** Stripe Elements sends the card to Stripe. The store posts only the payment-method id.
+2. **Stripe lookup.** The merchant asks Stripe for the card checks: funding type, CVC result, card country. Stripe's
+   card fingerprint becomes a letters-only card reference (a keyed hash, `tok_` plus 16 letters) and never leaves the
+   Stripe adapter.
+3. **Bank attestation, round 1.** Over a signed channel the merchant sends the card reference and the card's coarse
+   issuing region. The bank answers `issuer_behavior` and `issuer_recent_declines`. It never sees a card and never
+   moves money.
+4. **Banded facts and the wire guard.** The merchant computes its facts, scores two fraud models locally, and discloses
+   through a ledger that allows one disclosure per decision, limits disclosures per card, and refuses unknown keys,
+   off-vocabulary values, long strings and card-like digit runs.
+5. **Agents on Flower.** The merchant starts a Flower run. The coordinator AgentApp on the SuperLink sends the merchant's
+   SuperNode a purpose-tagged question over Grid. The merchant agent fetches the guarded facts from its own node and
+   replies. The coordinator re-verifies the reply and adds the network memory's band.
+6. **Round 2, only on disagreement.** If the store sees a buyer abroad while the card checks pass and the bank sees an
+   ordinary cardholder, the coordinator asks one targeted question through the same node: is this travel plausible?
+   The bank answers `travel_check` from history it never shares. "Implausible" holds the payment for a person and
+   never declines by itself; no answer also holds it.
+7. **Decision.** Fixed rules score the facts. A failed CVC is a hard decline with no vote. Jev's vote can make the
+   decision more cautious, never less, and an approval Jev is less than 80% sure of goes to a person. Endeavor writes
+   one sentence of explanation, or a template does if the model is down.
+8. **Outcome.** Approve charges through Stripe test mode. Decline voids the verification. Both are final. A hold waits
+   for a credentialed person, whose decision becomes a training label that updates the fraud model on that node inside
+   the same request.
 
 Code drives every Grid call. No model chooses a tool, sees a Grid payload, or decides alone.
 
-## The demo (about four minutes)
+## How we use Flower
 
-1. **A real purchase.** $20 with 4242 4242 4242 4242: the store shows a pm_ token, the SuperLink log
-   shows the agents talking, the ledger shows eight words (nine with the specialist band), the PaymentIntent lands in Stripe's dashboard.
-2. **Human in the loop.** $900 with 4000 0027 6000 3184 (German card): band high, human queue; the reviewer
-   picks a reason, decline voids, approve charges. Show `/review-stats` and the audit entry; the four per-family
-   bands are in the ledger note.
-3. **Fraud ring.** The same card at store-a, store-b, store-c within minutes: two clean approvals, then
-   the coordinator's network view turns the third red and alerts all three stores.
-4. **Break it.** 4000 0000 0000 0101: CVC fails, hard decline, Jev never asked. 4000 0000 0000 0002:
-   agents approve, the bank declines. Attack "leak": three attempts blocked, counter stays at 0.
-   Model-driven agent + an injection in the gift message: draft blocked, or altered facts logged and ignored.
-5. **Humans teach the agents.** Approve or decline a flagged payment, or chargeback an approved one: the model
-   updates at once and the reply shows the band before and after. Click Retrain to spread the lesson through a
-   federated round across five nodes. "Draft dispute response".
-6. **The numbers.** The per-merchant table below and the differential-privacy budget.
+- **Flower Agent (AgentApp).** One AgentApp with two roles. The coordinator role runs on the SuperLink and drives the
+  Grid tools in code: `get_nodes`, `push_messages`, `pull_messages`. The merchant role runs on each SuperNode and answers
+  with `push_reply_message`. Each checkout is one Flower run, started through the SuperLink Control API with the
+  decision as the prompt.
+- **Run series as agent memory.** Consecutive runs share a Flower run series, so the coordinator's network memory
+  persists in `context.state`. That is how a card seen at three stores becomes a fact no single store could produce.
+  The merchant accepts a verdict only after the run reports completed, so the next decision reads the saved state.
+- **Identity from Flower.** A verdict is accepted only from the SuperNode that read the facts, and network sightings are
+  keyed by Flower's node id, so a hostile node cannot speak for another merchant.
+- **SuperGrid.** Verified live: a SuperNode registered on SuperGrid in the deployment federation `@ac007/cardguard`
+  answered a coordinator run on Flower's infrastructure end to end.
+- **Endeavor.** The coordinator calls `flwrlabs/endeavor-1.0` through the Flower runtime for the explanation sentence.
+  It sees only the verdict and its recognised reasons. When Flower's provider is unavailable, a template answers and the
+  decision is unaffected.
+- **Federated training.** The shipped fraud model is trained with a Flower ServerApp and ClientApp, one simulated
+  SuperNode per merchant, with FedAvg. FedMedian (for hostile nodes) and differential privacy with an RDP accountant
+  are available. Human labels feed a federated round from the review panel.
 
-## Attacks we demonstrate, and where each is stopped
+## Safety and oversight
 
 | Attack (who) | Stopped by | Seen as |
 |---|---|---|
-| Put the card on the wire (compromised merchant) | Wire guard: closed vocabulary, Luhn scan, length cap | 3 BLOCKED ledger entries, counter stays 0 |
-| Prompt injection through customer text (buyer) | The vulnerable agent's draft is guarded, then integrity-checked against code-computed facts | Draft BLOCKED, or "altered X: ignored" |
-| Injection into the decision models (anyone) | Structural: Jev and Endeavor receive only vocabulary words; tests enumerate all 559,872 fact combinations (about 4 minutes; they are most of the suite's run time) | No path exists |
-| Slow leak through allowed values (compromised merchant) | One disclosure per decision, three attempts, ten per card per hour, receiving-side Verifier | Rate-limit BLOCKED entries |
-| Forge a verdict for another merchant (hostile SuperNode) | Verdict accepted only from the node that fetched the facts; two replies for one decision go to a human | Verdict rejected |
-| Poison the network view (hostile SuperNode) | Sightings keyed by Flower's authenticated node id | Alerts name the node |
-| Poison retraining, approve your own review (buyer) | Reviewer credential on every human action | 401 |
-| Compromised model endpoint (provider) | Jev can only make a decision more cautious; Endeavor is display-only and scanned | Delays, never approves |
+| Put the card on the wire (compromised merchant agent) | Wire guard: closed vocabulary, Luhn scan, length cap | BLOCKED ledger entries; card-like values seen: 0 |
+| Prompt injection through customer text (buyer) | The model-driven agent's draft is guarded and integrity-checked against facts computed in code; card-like text is refused before any model call | Draft blocked, or "altered draft ignored" |
+| Injection into the decision models (anyone) | Structural: Jev and Endeavor receive only vocabulary words. A test enumerates all 559,872 fact combinations | No path exists |
+| Slow leak through allowed values (compromised merchant) | One disclosure per decision, three attempts, ten per card per hour, receiving-side verifier | Rate-limit BLOCKED entries |
+| Forge a verdict for another merchant (hostile SuperNode) | Verdict accepted only from the node that fetched the facts; two replies to one decision go to a person | Verdict rejected |
+| Poison the network memory (hostile SuperNode) | Sightings keyed by Flower's authenticated node id | Alerts name the node |
+| Approve your own held payment, poison retraining (buyer) | A reviewer credential on every human action | Refused |
+| A compromised or failing model provider | Jev can only add caution; Endeavor is display-only and scanned; every model call degrades to rules or a template | Delays, never an approval |
 
-Every attack is stopped by a different layer; no single control is load-bearing.
+No single control is load-bearing. The human stays in the loop where the system is unsure: holds wait for a person,
+the reviewer sees the gate's own reasons, and every human decision is recorded, persisted and learned from without
+leaving the node. Weights are recomputed from the federated base each time, so labels cannot compound, and no weight
+moves more than 3.0 from the federated weights.
 
-## Accuracy, honestly
+## The demo
 
-IEEE-CIS, 590,540 real transactions, five product verticals as five merchants, nine features a
-merchant can compute at checkout, AUC on each merchant's own later transactions:
+Six one-click scenarios, each a real checkout in Stripe test mode. The full script, with what to click and what to say,
+is in [DEMO.md](DEMO.md).
 
-| Merchant (rows) | Trains alone | Plain FedAvg | FedAvg, then trains locally |
-|---|---|---|---|
-| W (346k) | 0.719 | 0.710 | 0.723 |
-| C (56k) | 0.638 | 0.645 | 0.640 |
-| R (32k) | 0.681 | 0.574 | 0.693 |
-| H (30k) | 0.584 | 0.527 | 0.591 |
-| S (8k) | 0.305 | 0.385 | 0.314 |
-
-**Live today:** the *Plain FedAvg* column, the shipped `fl_weights.json`. The last column is measured but not yet
-shipped (personalisation at startup is on the Left list); a node reaches it only after a human-triggered retrain.
-
-Plain FedAvg hurts large verticals (one linear model cannot fit five fraud mixes); training locally
-from the federated start removes the loss. Federation pays for small merchants: at 250 rows per
-merchant (11 fraud cases), the mean AUC goes from 0.564 alone to 0.587 federated and the worst
-merchant from 0.17 to 0.28; above about 1,000 rows a merchant learns as well alone with this model.
-The level is bounded by the features, not the model: a lookup table over all feature combinations
-tops out at the same place, and a neural net does no better. Kaggle winners reach 0.95 with 400
-columns a merchant does not have at checkout. More accuracy comes from richer node-local computation
-(0.78 to 0.85 measured), never from more bits on the wire. The ring detection is real code but this
-dataset cannot validate it: 69 cross-vertical sightings in 590k rows. Differential privacy is
-available (`FL_DP_NOISE=1.0`): epsilon about 40 at delta 1e-5 over 30 rounds, costing 0.015 AUC.
-
-Specialist models (four signal families, stacked, trained merchant by merchant): AUC 0.774 against 0.768 for the model
-above, with the clearest gains at the small merchants. Scoreboard and caveats: [Fraud specialists](#fraud-specialists-four-models-trained-merchant-by-merchant).
-
-## Fraud specialists: four models, trained merchant by merchant
-
-Four small models, each seeing one family of signals, are trained across the five merchants with FedAvg, then
-fine-tuned on each merchant's own rows. Every merchant node scores each checkout with its own copy and sends one new
-banded fact, `specialist_stack_band`. Training is per merchant: no model here is trained on all merchants' rows in
-one place.
-
-### Scoreboard: what runs today
-
-AUC and "top-5% catch" (share of all fraud that lands in the top 5% of scores) on the held-out last 20% of the
-IEEE-CIS window, per merchant. **LIVE marks what the merchant node uses now.**
-
-| Model | All | Top-5% catch | W | H | C | S | R | In the live system? |
-|---|---|---|---|---|---|---|---|---|
-| Original 9-feature model (`fl_weights.json`, FedAvg) | 0.768 | 22% | 0.726 | 0.536 | 0.635 | 0.381 | 0.565 | **LIVE** (unchanged) |
-| **Specialists, FedAvg + local fine-tune** | **0.774** | **25%** | 0.717 | 0.548 | 0.623 | **0.525** | **0.647** | **LIVE (new)** |
-| Specialists, plain FedAvg | 0.776 | 19% | 0.734 | 0.606 | 0.599 | 0.344 | 0.621 | not live |
-| Specialists, each merchant alone | 0.744 | 21% | 0.669 | 0.504 | 0.622 | 0.502 | 0.653 | not live |
-
-"All" pools every merchant's test rows. The specialists' band that is actually sent has three levels, which is
-coarser than the score: 0.708 AUC. Merchant sizes (training rows / test fraud cases): W 232,506 / 1,810;
-C 38,658 / 1,617; R 27,462 / 257; H 26,073 / 197; S 6,003 / 183. With 183 to 257 fraud cases, differences of a few
-hundredths for S, H and R are within noise.
-
-**What it shows**
-- The specialists are level with the original model overall (0.774 against 0.768) and catch a bit more in the top 5%
-  (25% against 22%). The clear gains are at the small merchants: S 0.525 against 0.381, R 0.647 against 0.565.
-  They are slightly worse at the two large ones (W by 0.009, C by 0.012).
-- Fine-tuning is what makes it work per merchant. Plain FedAvg has the best overall AUC but catches fewer frauds
-  (19%) and collapses at S (0.344). A merchant training alone is worse overall (0.744), notably at W (0.669), which is
-  why the federation is worth having.
-
-### The idea
-
-Today's federation is *horizontal*: every merchant has the same features on different customers, and FedAvg
-averages their weights. The specialists add a *vertical* view: each model sees a different family of columns of the
-same transaction, so its weights mean something different and cannot be averaged with another family's. A small
-final model combines their three-level bands instead. Only that one combined band crosses the wire.
-
-### The four specialists
-
-| Specialist | Looks at | Features |
-|---|---|---|
-| Transaction | amount above / below this merchant's 90th / 10th percentile, whole-dollar and whole-ten-dollar amounts, purchases by this card in the last 24 hours | 5 |
-| Identity | credit card, card age, first time this merchant sees the card | 3 |
-| Geo | card country differs from the buyer's country | 1 |
-| Behavior | night hour, hour unusual for this card, history length, amount deviation from this card's own habit, days since the previous purchase | 7 |
-
-All 16 features are computed by the merchant node from what it already holds (`cardguard/specialists/live.py`); a
-parity test checks that the live history features equal the training ones exactly.
-
-### How they are trained
-
-- **Data.** IEEE-CIS transactions, split by product type into five groups that act as five merchants. Each merchant
-  trains only on its own rows.
-- **Protocol.** The first 80% of the time window is training and the last 20% is the test period, which never fits
-  anything. Within training, the first 70% fits the specialists and the last 30% fits the stacker. Cutoffs, caps and
-  percentiles use training rows only, and history features look only at earlier rows; tests check both.
-- **FedAvg.** 50 rounds. Each round every merchant trains 6 epochs from the global weights on its own rows and the
-  server averages the weights by row count. Only weights move. Then each merchant fine-tunes for 40 epochs on its own
-  rows.
-- **Stacker.** Logistic regression on the four bands, with one set of cutoffs shared by every merchant (about 5% of
-  scores "high", the next 15% "medium"). Per-merchant cutoffs were tried and rejected: they force about 5% "high" at
-  every merchant and erase that fraud rates differ about five times between merchants (the pooled AUC of the three-level band fell from
-  0.71 to 0.59).
-
-Each specialist on its own, overall AUC, by how it was trained:
-
-| Specialist | Merchant alone | Plain FedAvg | FedAvg + fine-tune (live) |
-|---|---|---|---|
-| Transaction | 0.763 | 0.567 | 0.637 |
-| Identity | 0.750 | 0.653 | 0.726 |
-| Geo | 0.694 | **0.344** | 0.694 |
-| Behavior | 0.766 | 0.615 | 0.745 |
-
-**Why plain FedAvg breaks a feature.** Geo has one feature, `country_mismatch`, and it means different things at
-different merchants. At C, 99.8% of transactions are mismatches and every match is legitimate. At W (232k rows) a
-mismatch is rare and *less* fraudulent than average. The merchants' own weights for it are +0.47 at C, +0.86 at H,
--0.39 at W and -3.4 at S. FedAvg weights by rows, so W dominates and the shared weight becomes -0.38: the model points
-the wrong way (AUC 0.344). Fine-tuning gives each merchant back its own sign (0.694). This is the general lesson:
-merchant-level averaging is safe for signals with a stable meaning and needs a per-merchant step for the rest.
-
-### What is wired into the live node (and what is not)
-
-Four models score every checkout on the merchant node and become one new banded fact.
-
-```
-python -m cardguard.specialists.export        offline: FedAvg across the 5 merchants, then local fine-tune,
-   |                                          stack the four bands  ->  specialist_weights.json (6 KB, weights only)
-   v
-merchant.py loads it at startup for its own MERCHANT_VERTICAL   (SPECIALIST_WEIGHTS=none disables; absent = old behaviour)
-   v  each checkout: 16 features from state the node already holds + per-card history (bounded, 20k cards)
-four specialists -> four bands (kept in the local audit note only) -> logistic stack -> specialist_stack_band
-   v
-guard.WIRE_SCHEMA (a 9th closed-vocabulary fact) -> coordinator: +1 medium / +2 high, Jev sees it -> verdict in code
-```
-
-- **Only one band crosses the wire.** `specialist_stack_band` is the only new fact (invariant 2). The four
-  per-specialist bands stay in the ledger's local note so a reviewer can see *which* signal family fired. No new Grid
-  roles, so invariant 1a (one reply per decision) is untouched.
-- **Fails safe.** A missing, unreadable or non-validating file (wrong features, non-finite weights) disables the
-  specialists and the node decides exactly as before (invariant 5). Tests cover each case.
-- **Regenerate:** `python -m cardguard.specialists.export` (needs the dataset and the feature cache, a few minutes).
-  The exported model on the test period: pooled AUC 0.774, top-5% catch 24.8%.
-- **Known risks.** `specialist_stack_band` partly overlaps `model_risk_band` and both add to the score (kept at the
-  same weight so neither dominates). The behavior features need per-card history, so a freshly started node scores
-  them near zero. Training's `country_mismatch` means "billing country missing or not the home country", while live
-  it means "card country differs from the buyer's country".
-
-**Not built:** separate specialist nodes on the Grid (needs invariant 1a reworked); broadcasting a human label to the
-specialists (the label already stores its decision id for this).
-
-### Human in the loop: what was missing, and what is now implemented
-
-Before this work a `step_up` verdict went to a review queue (void after one hour, reviewer token to act, the
-decision became a local label, a federated round could retrain on the labels). Checked against the code, six gaps
-stood between that and "once classified as fraud, add a human opinion". They were closed by a subagent working in an
-isolated worktree, then merged and checked here (13 tests in `tests/test_human_review.py`). The behaviour and its
-environment variables are documented in **Human in the loop: what is implemented** below.
-
-| # | Gap found | Status |
-|---|---|---|
-| G1 | A `decline` was final: no human saw it, so "fraud" was only a weighted vote | **Done.** A soft decline is a second look in the same queue; a hard decline (CVC failed) stays final. `SECOND_LOOK_ON_DECLINE=0` restores the old behaviour. |
-| G2 | Labels lived in an in-memory list and were lost on restart | **Done.** JSONL file, reloaded at startup, capped at 2000, tolerant of a missing or corrupt file |
-| G3 | Approve/decline only: no reason, no reviewer, nothing in the audit chain | **Done.** Closed reason vocabulary, reviewer id, leak-scanned note kept on the node, hash-chained audit of every opinion and expiry |
-| G4 | Retraining manual and per node; labels usable only by the 9-feature model | **Mostly done.** Every human decision now teaches the fraud model instantly (see Instant learning below); Retrain still spreads it across nodes. The specialist models do not learn from labels yet; labels carry a `decision_id` for that step |
-| G5 | No visibility of human-versus-model disagreement | **Done.** `GET /review-stats`: agreement, overturn rate of soft declines, time to review, counts by reason |
-| G6 | `GET /reviews` needs no credential | **Unchanged.** It lists banded facts only; acting on a review still needs the reviewer token. Decide if that is intended. |
-
-Two guardrails were added: no action can override a hard decline, and an optional two-reviewer rule
-(`TWO_REVIEWER_ABOVE_CENTS`) where an approval above the amount needs a second, different reviewer while a decline
-needs one. **Behaviour change to know about:** with the default on, a very risky purchase (rules score of 8 or more,
-or a Jev decline) now waits in the review queue instead of being refused on the spot. It is still not charged, and it
-is voided after an hour if nobody looks. The checkout-page changes were not opened in a browser, so give that page a
-look before the demo.
-
-### Integration status and what is left
-
-| Phase | What | Status |
-|---|---|---|
-| 1 | Human in the loop after classification (queue, structured audited opinion, persisted labels, stats, guardrails) | **done** |
-| 2 | Specialist band as an extra fact from the same node | **done** (one fact, `specialist_stack_band`) |
-| 3 | Broadcast a human label to the specialists and retrain the stack (label already carries `decision_id`) | not built |
-| 4 | True specialist nodes on the Grid: one band per node, invariant 1a reworked to accept one reply per `(decision_id, node_id)` with a quorum and abstain states | not built; larger change |
-| 5 | Train the specialists inside a Flower ServerApp/ClientApp like the original model, instead of our own one-process averaging code | not built |
-
-Rules that carry through every phase: each new band is a closed vocabulary with a test (invariant 2); models only
-ever see banded facts; the verdict stays computed in code; no card data anywhere near a specialist.
-
-### Caveats, stated plainly
-
-- **Level with the original model, not a leap.** 0.774 against 0.768 overall; the visible gains are at the small
-  merchants and in the explainability of four readable bands. The specialists' inputs are the ones a checkout has.
-- **Slightly optimistic.** We looked at test-period results while choosing the training recipe (FedAvg + fine-tune,
-  shared cutoffs). A clean figure would pick every setting on the stacker's validation slice and touch the test
-  period once at the end.
-- **Specialists are not trained inside a Flower app.** Their FedAvg is our own Python code over five merchant slices of
-  one dataset in one process; the original model's training is the real Flower app. The maths is the same; the
-  transport is not. At decision time both models take part through the Flower agent (their bands are facts on the Grid).
-- **Small merchants are noisy.** S has 183 fraud cases in its test period, R 257, H 197.
-- Wording: this narrows what any one agent sees. It does not make anything "PCI compliant".
-
-### Run it
-
-```
-python -m cardguard.specialists.experiment --synthetic          # offline, seconds, four injected fraud types
-python -m cardguard.specialists.experiment                      # real data; ~2 min the first time (builds the cache)
-python -m cardguard.specialists.experiment --rebuild            # ignore datasets/specialist_features.npz
-python -m cardguard.specialists.experiment --limit 50000        # quick look at the first 50k rows
-python -m cardguard.specialists.export                          # train the live specialists -> specialist_weights.json
-python -m cardguard.specialists.export --mode federated         # the same with plain FedAvg (no local fine-tune)
-python -m pytest tests/test_specialists.py tests/test_specialists_live.py -q   # 20 tests, offline
-```
-Needs `datasets/train_transaction.csv`. Synthetic mode is a wiring check only: its fraud types are built so each is
-visible to one specialist, so its numbers say nothing about real performance.
-
-### Recommendation and decision for the team
-
-1. **Present the specialists as they are:** four readable bands, trained merchant by merchant, level with the original
-   model overall and better at the small merchants. The story is that a shared model needs a per-merchant step, and
-   that vertical federation lets parties who cannot pool their signal families still combine them.
-2. **Do not claim that merchant-level federation beats a merchant training alone in general.** It matters most for the
-   smallest merchants, and it breaks features whose meaning differs by merchant unless each merchant fine-tunes.
-3. **The demo moment is the human in the loop**: a flagged payment waits, a reviewer gives a reason, it lands in the
-   audit chain and becomes a label. Show `/review-stats` and the per-family bands in the ledger.
-4. **Next, if time allows:** broadcast labels to the specialists (phase 3). Leave true specialist nodes (phase 4)
-   for after the hackathon.
-
-## Layout
-
-| Path | Role |
+| Scenario | What happens |
 |---|---|
-| cardguard/decision/ | guard (schema, leak scanner, ledger), coordinator (rules, Jev, Verifier), explain (Endeavor), network (ring fact), audit (hash chain), llm (one model client) |
-| cardguard/agentapp/ | agent_app (coordinator and merchant roles over Grid), launch (start a run via the SuperLink Control API), dispute_agent |
-| cardguard/payment_processing/ | merchant (Flask node), review_store (human opinions, audit, saved labels), stripe_processor, processor_base, agent_llm (the vulnerable demo agent), trace (the live investigation trace the UI animates) |
-| cardguard/bank/ | node (bank attestation: synthetic private history, bands only, signed requests), client (the merchant's side) |
-| web/ | the investigation UI: React + Vite + TypeScript; the graph animates only real trace events |
-| cardguard/training/ | fl (numpy logistic regression + FedAvg), flower_app (Flower ServerApp/ClientApp), retrain, join, privacy |
-| cardguard/data/ieee_cis.py | real data: five verticals, features relative to each, time holdout |
-| cardguard/specialists/ | four signal-family models scored live (`live.py`), trained and exported (`export.py`), plus the offline experiment (`experiment.py`, `federated.py`) |
-| tests/ | offline; Jev, Endeavor, the LLM and the Stripe SDK are faked; the bank node runs in-process |
-| run_demo.py, scripts/ | demo runner; SuperLink and SuperNode launchers |
+| Normal purchase | Approved and charged. Every fact that crossed a boundary is on screen; card numbers shared: 0 |
+| Collaborative investigation | The store and the bank disagree; round 2 asks the bank one question; held for a person |
+| Obvious fraud | The CVC check fails at Stripe: hard decline, no vote, nothing charged |
+| Rogue node | A compromised merchant agent tries three ways to leak the card; each is stopped at the boundary |
+| Prompt injection | A gift message tries to steer the model-driven agent; its draft is checked, never sent |
+| Card-testing ring | One card at three stores in a minute: network band low, medium, high; the third is held and all three stores are alerted |
 
-## Human in the loop: what is implemented
+Then a person declines the held payment, and the fraud model on that node learns from it at once.
 
-After the agents flag a payment as fraud-suspected, a human gives a structured opinion that is audited,
-persisted and fed back as a training label. Card data never appears in any of it.
+## Results, honestly
 
-- **Fraud-suspected = `step_up` or a soft `decline`.** Soft declines (no `hard` flag) go to the same
-  review queue as a second look: the verification stays open, nothing is charged, and a human confirms
-  (decline, label 1) or overturns (approve, label 0). Unreviewed items are voided after one hour.
-  Hard declines (`cvc_check=fail`) stay final and are never queued. `SECOND_LOOK_ON_DECLINE=0` restores
-  final soft declines (default on).
-- **Structured opinion.** `POST /reviews/<id>/approve|decline` (reviewer token) takes an optional JSON
-  body `{"reason": ..., "note": ...}`. Reasons are a closed vocabulary: `card_testing`, `ring_pattern`,
-  `known_customer`, `customer_verified`, `amount_out_of_pattern`, `other`; anything else is a 400 and
-  changes nothing. The note (max 200 chars) is scanned for card-like data, stays on this node, and is
-  never sent to the coordinator, a model or `Ledger.disclose()`. `X-Reviewer-Id` (letters, digits, `-_`,
-  max 32) names the reviewer.
-- **Audit.** Every opinion (and every expiry) is appended to a hash-chained log (`REVIEW_AUDIT_FILE`,
-  default `.demo/review_audit.jsonl`): review id, decision, reason, reviewer, the model band and cites the
-  reviewer was shown, timestamp, time to review, and only the note's length and SHA-256. A file whose
-  chain fails verification is moved aside at startup.
-- **Persisted labels.** Human reviews and chargebacks append to `LABELS_FILE` (default
-  `.demo/labels.jsonl`): the 9 local features, label, source (`review`|`chargeback`), reason,
-  decision id, timestamp. Loaded at startup (last 2000; corrupt lines are skipped).
-- **Metrics.** `GET /review-stats` (reviewer token): reviews done, queue length and oldest age,
-  model-versus-human agreement (band high/medium counts as "model says fraud"), overturn rate of soft
-  declines, median seconds to review, counts by reason, audit chain status. These are API endpoints: the React
-  review panel does not send a reason or note yet.
-- **Instant learning.** Every human decision (and chargeback) updates the fraud model's weights in the same
-  request. The node recomputes them from the last federated weights, a fixed sample of its own ordinary rows and
-  all its saved labels; one decision counts as `INSTANT_LABEL_SHARE` (default 0.10) of that sample. Because it is
-  recomputed rather than stacked it cannot compound, is order-independent, is re-applied from the saved labels at
-  startup, and no weight moves more than 3.0 from the federated weights. A failure to learn never blocks the human's
-  decision. Replies carry `learned`: the payment's model band before and after. `INSTANT_LEARNING=0` switches it off.
-  Measured on real data (merchant W): the sample alone changes 1.7% of bands; approving a high-risk payment moves it
-  0.58 to 0.30 (about 7% of other payments change band); declining a low-risk-looking one 0.10 to 0.32 (about 21%).
-  Labels alone, without the sample, flipped 99% of payments to high after one decline, which is why the sample is there.
-- **Two reviewers.** `TWO_REVIEWER_ABOVE_CENTS` (default 0 = off): above that amount the first approval
-  is recorded as `awaiting_second` (HTTP 202) and a different `X-Reviewer-Id` must approve to complete
-  it. A decline needs one reviewer.
+IEEE-CIS: 590,540 real card transactions. The five product types act as five merchants, and each model is scored on
+each merchant's own later transactions (the last 20% of the time window never trains anything).
 
-## Environment (.env, see .env.example)
+| Model | AUC, all merchants | Share of fraud in the top 5% | Smallest merchant (S) |
+|---|---|---|---|
+| Federated fraud model, 9 features (shipped, Flower FedAvg) | 0.768 | 22% | 0.381 |
+| Four specialist models, FedAvg then local fine-tune (shipped) | 0.774 | 25% | 0.525 |
+| The specialists, each merchant training alone | 0.744 | 21% | 0.502 |
 
-`STRIPE_SECRET_KEY`, `STRIPE_PUBLISHABLE_KEY` (test keys, required) · `FLWR_MODEL_API_KEY` (live
-explanations through Flower; model `flwrlabs/endeavor-1.0`) · `TYPESAFE_API_KEY` (Jev) ·
-`LLM_BASE_URL/LLM_API_KEY/LLM_MODEL` (direct calls for the injection demo and dispute drafts) ·
-`MERCHANT_VERTICAL` · `STORES` · `FL_DP_NOISE`, `FL_DP_CLIP`, `FL_ROBUST` · `DEMO_CONTROLS` (set by
-run_demo: page may choose country, hour, attack, agent mode; unset = production behaviour) ·
-`SPECIALIST_WEIGHTS` (path, or `none` to switch the specialist models off) · `SECOND_LOOK_ON_DECLINE` (default 0) ·
-`TWO_REVIEWER_ABOVE_CENTS` (default 0 = off) · `LABELS_FILE`, `REVIEW_AUDIT_FILE` (default under `.demo/`) ·
-`INSTANT_LEARNING` (default 1), `INSTANT_LABEL_SHARE` (default 0.10).
+- Federation helps most where data is scarce. For the nine-feature model, federated training followed by a local
+  fine-tune beat training alone at every one of the five merchants, with the largest gains at the small ones. Plain
+  averaging alone can hurt a large merchant, which the fine-tune fixes. We do not claim federation beats every merchant
+  on every model.
+- The ceiling is the features a checkout has, not the model: Kaggle winners reach 0.95 with 400 columns a merchant does
+  not see at checkout. More accuracy comes from richer computation on each node, never from more bits on the wire.
+- Differential privacy is available: epsilon about 40 at delta 1e-5 over 30 rounds, costing 0.015 AUC.
+- The fraud-ring signal is real code, but this dataset cannot validate it: it has only 69 cross-merchant sightings.
 
-## Assumptions, stated plainly
+Details, per-merchant tables and caveats: [TRAINING.md](TRAINING.md).
 
-Stripe test mode is real Stripe with no real money. Synthetic data is used only by offline tests.
-Fallbacks announce themselves: `decided_by: rules` without Jev, `by: template` without a model
-endpoint. The buyer's country is a demo control; production plugs IP geolocation into `geolocate()`.
-Rules weights (including the one for `specialist_stack_band`), band cut-offs, velocity cuts, the human-label weight
-the ring window and the instant-learning label share are hand-set. The specialists' FedAvg is run by our own Python code over the five merchants in one
-process (`cardguard/specialists/export.py`), not yet inside a Flower app; the original model's training is
-the real Flower app. Live, one node loads its own vertical's weights.
-Several stores on one node is a demo convenience; in production one node is one merchant.
+## Quick start
 
-Traps: port 8000 may be taken (the SuperLink uses 8010); `flwr run` refuses AgentApps without a
-prompt (use run_demo.py or `cardguard.agentapp.launch`); the SuperLink needs the venv on PATH (the
-scripts do this); every pin in pyproject.toml must resolve with flwr's own pins, since the AgentApp
-runtime env is rebuilt from it on every run; nothing under datasets/, .demo/ or .env is committed.
+Python 3.11 to 3.13, [uv](https://docs.astral.sh/uv/), pnpm, and Stripe test keys.
 
-License: MIT. Data: IEEE-CIS under the Kaggle competition rules (research use).
+```bash
+git clone https://github.com/CR2004/cardguard.git && cd cardguard
+uv venv --python 3.12 .venv && uv pip install --python .venv/bin/python -r requirements.txt
+source .venv/bin/activate
+python -m pytest -q
+pnpm --dir web install && pnpm --dir web build
+cp .env.example .env
+```
+
+Fill in `.env`: `STRIPE_SECRET_KEY` and `STRIPE_PUBLISHABLE_KEY` (test keys, required; live keys are refused),
+`FLWR_MODEL_API_KEY` (Endeavor through Flower), `TYPESAFE_API_KEY` (Jev), and optionally `REVIEWER_TOKEN`
+(eight or more characters; otherwise one is minted at every start). Without the model keys, rules decide and a template
+explains.
+
+Decisions over Flower, three terminals:
+
+First add the local SuperLink to `~/.flwr/config.toml`, if it is not there yet:
+
+```toml
+[superlink.local-agent]
+address = "127.0.0.1:8010"
+insecure = true
+```
+
+```bash
+python scripts/run_superlink.py
+python scripts/run_supernode.py
+python run_demo.py --federation local-agent --stores store-a,store-b,store-c
+```
+
+Open http://127.0.0.1:4242. Without `--federation`, the coordinator runs inside the merchant process with the same rules.
+
+Training on real data: put IEEE-CIS `train_transaction.csv` in `datasets/` (see [datasets/README.md](datasets/README.md)),
+then run `python -m cardguard.training.flower_app` for the federated model and `python -m cardguard.specialists.export`
+for the specialists. Without it, training and tests use synthetic data.
+
+## Repository layout
+
+| Path | What it is |
+|---|---|
+| `cardguard/agentapp/` | The Flower AgentApp (coordinator and merchant roles), the run launcher, the dispute agent |
+| `cardguard/decision/` | Wire guard and ledger, coordinator rules and verifier, network memory, Endeavor explanation, hash-chained audit |
+| `cardguard/payment_processing/` | The merchant node, Stripe test-mode processor, review store, live investigation trace, the model-driven demo agent |
+| `cardguard/bank/` | The bank attestation node and its signed client |
+| `cardguard/training/` | Federated learning (Flower ServerApp and ClientApp), human-label retraining, differential privacy, join-the-network |
+| `cardguard/specialists/` | The four signal-family models: live scoring and training |
+| `cardguard/data/` | IEEE-CIS loading and features |
+| `web/` | The investigation UI (React, Vite, TypeScript); it animates only real events the nodes report |
+| `tests/` | Offline tests: Stripe, Jev, Endeavor and the model client are faked; the bank runs in-process |
+
+## Status and limitations
+
+Verified live on September 29: Stripe test mode, Jev, Endeavor through Flower, the AgentApp over a local SuperLink and
+SuperNode, a decision over SuperGrid, the fraud ring across stores, and instant learning from human review. 219 Python
+tests and 36 UI tests pass offline.
+
+Stated plainly:
+
+- **The bank's history is synthetic,** and its card reference is a keyed hash of Stripe's test card fingerprint: a demo
+  correlation, not an issuer-network identity protocol.
+- **One SuperNode fronts three stores in the demo.** In production each merchant would be its own SuperNode; the
+  coordinator already keys identity by node.
+- **The specialists' federated averaging runs in our own Python code,** over five merchant slices in one process. The
+  nine-feature model is trained in a real Flower app. Only the nine-feature model learns from human labels so far.
+- **Endeavor depends on Flower's provider,** which returned errors intermittently on the day. A template covers it and
+  decisions never depend on it.
+- **A decision over SuperGrid takes about three minutes,** mostly task scheduling. Locally it takes 6 to 12 seconds.
+- **The buyer's country and hour are demo controls.** In production they come from IP geolocation and the clock.
+- **Hand-set values:** the rule weights, band cutoffs and instant-learning label share.
+
+## License and data
+
+MIT. IEEE-CIS data is used under the Kaggle competition rules for research and is not included in this repository.
