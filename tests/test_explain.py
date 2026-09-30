@@ -54,7 +54,7 @@ def test_template_no_signals():
     assert template({"decision": "approve", "cites": []}) == "Approved because of no risk signals."
 
 
-def test_model_5xx_is_retried_once_then_template():
+def test_model_5xx_is_retried_then_template():
     from cardguard.decision import llm
 
     class Flaky:
@@ -71,9 +71,9 @@ def test_model_5xx_is_retried_once_then_template():
     once = Flaky(1)
     out = llm.ask("i", "x", "template text", client=once)
     assert once.calls == 2 and out["by"] != "template" and out["text"].startswith("Held")
-    twice = Flaky(2)
-    out = llm.ask("i", "x", "template text", client=twice)
-    assert twice.calls == 2 and out == {"text": "template text", "by": "template", "error": "RuntimeError"}
+    always = Flaky(99)
+    out = llm.ask("i", "x", "template text", client=always)
+    assert always.calls == llm.RETRIES + 1 and out == {"text": "template text", "by": "template", "error": "RuntimeError"}
 
     class Bad(Flaky):
         def create(self, **kw):
@@ -98,3 +98,10 @@ def test_says_which_endpoint_answered(monkeypatch):
     out = llm.ask("i", "x", fallback="t", client=fake)
     assert out["via"] == "custom" and out["by"] == llm.model_name()
 
+
+
+def test_model_id_is_trimmed(monkeypatch):
+    from cardguard.decision import llm
+    monkeypatch.delenv("LLM_MODEL", raising=False)
+    monkeypatch.setenv("ENDEAVOR_MODEL", "flwrlabs/endeavor-1.0   ")
+    assert llm.model_name() == "flwrlabs/endeavor-1.0"

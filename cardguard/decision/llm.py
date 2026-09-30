@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import os
 
-RETRIES = 1  # extra attempts on a 5xx before the template answers
+RETRIES = 2  # extra attempts on a 5xx before the template answers (Flower's Endeavor provider 502s often)
 DEFAULT_MODEL = "flwrlabs/endeavor-1.0"  # Flower Endeavor, as served through the Flower runtime; override with ENDEAVOR_MODEL / LLM_MODEL
 
 
@@ -43,7 +43,7 @@ def client(timeout: float = 8.0):
 
 
 def model_name() -> str:
-    return os.environ.get("LLM_MODEL") or os.environ.get("ENDEAVOR_MODEL") or DEFAULT_MODEL
+    return (os.environ.get("LLM_MODEL") or os.environ.get("ENDEAVOR_MODEL") or DEFAULT_MODEL).strip()
 
 
 def ask(instructions: str, input_text: str, fallback: str, client=None, timeout: float = 8.0,
