@@ -53,8 +53,8 @@ REVIEWER_TOKEN = os.environ.get("REVIEWER_TOKEN", "")     # the human reviewer's
 # Demo controls let the page choose the buyer's country, the hour, and the model-driven agent mode.
 # In production these are derived server-side (IP geolocation, the clock) and the agent mode is off.
 DEMO_CONTROLS = os.environ.get("DEMO_CONTROLS", "0") == "1"
-# A soft decline (no hard flag) is a second look, not a final refusal: a human can confirm or overturn it.
-SECOND_LOOK_ON_DECLINE = os.environ.get("SECOND_LOOK_ON_DECLINE", "1") != "0"
+# Optional: a soft decline (no hard flag) can wait for a human as a second look. Off by default.
+SECOND_LOOK_ON_DECLINE = os.environ.get("SECOND_LOOK_ON_DECLINE", "0") == "1"  # off: approve and decline are final, only step_up waits
 TWO_REVIEWER_ABOVE_CENTS = int(os.environ.get("TWO_REVIEWER_ABOVE_CENTS", "0"))  # 0 = off; above it an approval needs two reviewers
 LABELS_FILE = os.environ.get("LABELS_FILE", str(ROOT / ".demo" / "labels.jsonl"))
 REVIEW_AUDIT_FILE = os.environ.get("REVIEW_AUDIT_FILE", str(ROOT / ".demo" / "review_audit.jsonl"))

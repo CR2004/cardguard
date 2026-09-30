@@ -41,8 +41,8 @@ merchant startup; UI polish (the new review panel has not been opened in a brows
    was missing, so 4 tests and 3 test files could not run; everything else passes.
 2. Build the UI (`pnpm --dir web install && pnpm --dir web build`), start `python run_demo.py`, and try a queued
    review in the browser. The reason and note fields are API-only: the React review panel does not send them yet.
-3. Decide `SECOND_LOOK_ON_DECLINE`. With the default (on), a very risky purchase waits for a human instead of
-   being refused on the spot; `SECOND_LOOK_ON_DECLINE=0` restores the old behaviour.
+3. Decide `SECOND_LOOK_ON_DECLINE`. By default (off) approve and decline are final and only a step-up waits for
+   a human; `SECOND_LOOK_ON_DECLINE=1` makes a soft decline wait for a human too.
 4. `specialist_weights.json` is trained offline on the IEEE-CIS verticals and committed. Regenerate it with
    `python -m cardguard.specialists.export` if the features change; delete it (or set `SPECIALIST_WEIGHTS=none`) to
    switch the specialists off.
@@ -426,7 +426,7 @@ explanations through Flower; model `flwrlabs/endeavor-1.0`) · `TYPESAFE_API_KEY
 `LLM_BASE_URL/LLM_API_KEY/LLM_MODEL` (direct calls for the injection demo and dispute drafts) ·
 `MERCHANT_VERTICAL` · `STORES` · `FL_DP_NOISE`, `FL_DP_CLIP`, `FL_ROBUST` · `DEMO_CONTROLS` (set by
 run_demo: page may choose country, hour, attack, agent mode; unset = production behaviour) ·
-`SPECIALIST_WEIGHTS` (path, or `none` to switch the specialist models off) · `SECOND_LOOK_ON_DECLINE` (default 1) ·
+`SPECIALIST_WEIGHTS` (path, or `none` to switch the specialist models off) · `SECOND_LOOK_ON_DECLINE` (default 0) ·
 `TWO_REVIEWER_ABOVE_CENTS` (default 0 = off) · `LABELS_FILE`, `REVIEW_AUDIT_FILE` (default under `.demo/`) ·
 `INSTANT_LEARNING` (default 1), `INSTANT_LABEL_SHARE` (default 0.10).
 

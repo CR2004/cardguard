@@ -28,8 +28,19 @@ def client(monkeypatch, tmp_path):
 
 
 def soft(monkeypatch, c, **kw):
+    """A soft decline held for a second look: the opt-in SECOND_LOOK_ON_DECLINE path (off by default)."""
+    monkeypatch.setattr(merchant, "SECOND_LOOK_ON_DECLINE", True)
     monkeypatch.setattr(merchant, "decide", lambda facts, client=None: dict(SOFT))
     return buy(c, card=MASTER_DE, amount=90000, **kw)
+
+
+def test_by_default_a_decline_is_final_and_never_queued(client, monkeypatch):
+    """Approve and decline are final; only a step_up waits for a person (SECOND_LOOK_ON_DECLINE is off)."""
+    assert merchant.SECOND_LOOK_ON_DECLINE is False
+    monkeypatch.setattr(merchant, "decide", lambda facts, client=None: dict(SOFT))
+    res = buy(client, card=MASTER_DE, amount=90000)
+    assert res["outcome"] == "declined" and res["charged"] is False and "review_id" not in res
+    assert merchant.pending == {}
 
 
 def test_soft_decline_is_queued_not_charged_and_hard_decline_is_not(client, monkeypatch):
@@ -43,12 +54,6 @@ def test_soft_decline_is_queued_not_charged_and_hard_decline_is_not(client, monk
     n = len(merchant.pending)
     hard = buy(client, card=CVC_FAIL)
     assert hard["outcome"] == "declined" and hard["verdict"].get("hard") and len(merchant.pending) == n
-
-
-def test_second_look_switch_off_keeps_final_declines(client, monkeypatch):
-    monkeypatch.setattr(merchant, "SECOND_LOOK_ON_DECLINE", False)
-    res = soft(monkeypatch, client)
-    assert res["outcome"] == "declined" and not merchant.pending
 
 
 def test_human_can_overturn_or_confirm_a_soft_decline(client, monkeypatch):
