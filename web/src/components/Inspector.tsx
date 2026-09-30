@@ -1,7 +1,9 @@
 import { Bot, ChevronDown, CreditCard, Flower2, Landmark, Network, Scale, ShieldCheck, Sparkles, Store, UserRound, X } from 'lucide-react';
 import { formatBytes, riskPoints } from '../format';
-import { explainerOf, plainReason, settlementOf, type GateView, type Investigation, type Party } from '../investigation/derive';
+import { explainerOf, paymentStateOf, plainReason, type GateView, type Investigation, type Party } from '../investigation/derive';
+import type { ReportSource } from '../report/report';
 import { EvidenceChip } from './EvidenceChip';
+import { ExportReport } from './ExportReport';
 import { IdChip } from './IdChip';
 import { GateRules, RiskMeter, stoppedText, VERDICT_WORD, type GateReveal } from './PolicyGate';
 
@@ -17,7 +19,8 @@ const sentence = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
 type VerdictKey = 'approve' | 'step_up' | 'decline' | 'stopped' | 'pending';
 
-function verdictOf(view: Investigation, decided: boolean): { key: VerdictKey; word: string; by: string } {
+/** The verdict as this pane states it; the exported report reuses it so both always say the same. */
+export function verdictOf(view: Investigation, decided: boolean): { key: VerdictKey; word: string; by: string } {
   if (view.review?.decided) {
     const approve = view.review.decided === 'approve';
     return { key: approve ? 'approve' : 'decline', word: approve ? 'Approved' : 'Declined',
@@ -93,19 +96,14 @@ export function Roles({ gate, review }: { gate: GateView; review?: { decided?: s
 /** Stripe's side, kept apart from CardGuard's decision: what happened to the money. */
 export function Settlement({ view }: { view: Investigation }) {
   const pay = view.payment;
-  const held = !pay && view.phase === 'review';
-  const s = pay ? settlementOf(pay.approve, pay.status, pay.reason) : null;
-  const ended = !pay && !held && view.phase === 'done'; // stopped before Stripe was asked to settle
-  const payText = s ? s.word : held ? 'Held' : ended ? 'Not charged' : '—';
-  const payNote = s ? s.note : held ? 'Nothing charged yet' : ended ? 'Nothing was charged' : 'Waiting for a decision';
-  const tone = s ? s.tone : held ? 'attention' : ended ? 'neutral' : undefined;
+  const s = paymentStateOf(view);
   return (
-    <section className="settle" data-tone={tone} aria-label="Stripe payment, separate from the decision">
+    <section className="settle" data-tone={s.tone} aria-label="Stripe payment, separate from the decision">
       <div className="settle__row">
         <span className="settle__who"><CreditCard size={14} aria-hidden /> Stripe payment <em>Test</em></span>
-        <b className="settle__value">{payText}</b>
+        <b className="settle__value">{s.word}</b>
       </div>
-      <span className="settle__note">{payNote}</span>
+      <span className="settle__note">{s.note}</span>
       {pay?.authCode && (
         <div className="settle__id"><span>PaymentIntent</span><IdChip id={pay.authCode} label="PaymentIntent id" /></div>
       )}
@@ -140,9 +138,10 @@ interface Props {
   reveal: GateReveal;
   gateKey: number;
   reduced: boolean;
+  exportSource?: ReportSource | null; // set once the decision is complete and on screen
 }
 
-export function Inspector({ view, reveal, gateKey, reduced }: Props) {
+export function Inspector({ view, reveal, gateKey, reduced, exportSource }: Props) {
   const v = verdictOf(view, reveal.decided);
   const verified = view.evidence.filter((x) => x.status === 'verified').length;
   const raw = view.metrics.rawCardShared ?? 0;
@@ -166,6 +165,7 @@ export function Inspector({ view, reveal, gateKey, reduced }: Props) {
         )}
         {view.gate && reveal.decided && <Roles gate={view.gate} review={view.review} />}
       </section>
+      {exportSource && <ExportReport source={exportSource} />}
 
       <Settlement view={view} />
 

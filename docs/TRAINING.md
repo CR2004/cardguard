@@ -1,7 +1,7 @@
 # How training works: nodes, federation, and what moves
 
 A plain-words guide to how the fraud models are trained, who does what, and what is (and is not) shared.
-Measured results and caveats are in the [README](README.md#fraud-specialists-four-models-trained-merchant-by-merchant).
+Measured results and caveats are in [Does the federation help?](#does-the-federation-help) below.
 
 ## The idea in one paragraph
 
@@ -250,11 +250,27 @@ reviewer approves / declines  ->  label saved (the payment's 9 features + fraud 
 
 ## Does the federation help?
 
+IEEE-CIS: 590,540 real card transactions. The five product types act as five merchants, and each model is scored on
+each merchant's own later transactions (the last 20% of the time window never trains anything).
+
+| Model | AUC, all merchants | Share of fraud in the top 5% | Smallest merchant (S) |
+|---|---|---|---|
+| Federated fraud model, 9 features (shipped, Flower FedAvg) | 0.768 | 22% | 0.381 |
+| Four specialist models, FedAvg then local fine-tune (shipped) | 0.774 | 25% | 0.525 |
+| The specialists, each merchant training alone | 0.744 | 21% | 0.502 |
+
 - Merchants training **alone** score lower overall than the federated setup (0.744 vs 0.774 for the specialists),
   notably at the largest merchant.
 - Plain averaging alone can hurt a merchant, which is what the fine-tune step fixes; the specialists' fine-tuned
   version helps the small merchants most (merchant S: 0.525 against 0.381 for the federated fraud model).
-- Overall, the specialists are level with the federated fraud model (0.774 against 0.768). Details are in the README.
+- Overall, the specialists are level with the federated fraud model (0.774 against 0.768).
+- For the nine-feature model, federated training followed by a local fine-tune beat training alone at every one of the
+  five merchants, with the largest gains at the small ones. We do not claim federation beats every merchant on every
+  model.
+- The ceiling is the features a checkout has, not the model: Kaggle winners reach 0.95 with 400 columns a merchant does
+  not see at checkout. More accuracy comes from richer computation on each node, never from more bits on the wire.
+- Differential privacy is available: epsilon about 40 at delta 1e-5 over 30 rounds, costing 0.015 AUC.
+- The fraud-ring signal is real code, but this dataset cannot validate it: it has only 69 cross-merchant sightings.
 
 ## Where the Flower agent comes in
 

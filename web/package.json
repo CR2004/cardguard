@@ -11,6 +11,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "jspdf": "^4.2.1",
     "lucide-react": "^1.48.0",
     "motion": "^13.4.4",
     "react": "^19.3.0",

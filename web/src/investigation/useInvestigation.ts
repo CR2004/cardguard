@@ -21,11 +21,13 @@ interface State {
   error: string | null;
   ciphertext: string | null;
   runs: number;
+  input: RunInput | null; // what this page sent with the checkout (for the exported report)
+  startedAt: number | null; // this browser's clock when the checkout was sent (epoch ms)
 }
 
 type Action =
   | { type: 'tokenizing' }
-  | { type: 'start'; traceId: string; ciphertext: string }
+  | { type: 'start'; traceId: string; ciphertext: string; input: RunInput; startedAt: number }
   | { type: 'page'; events: TraceEvent[]; done: boolean; rawCardShared?: number }
   | { type: 'advance' }
   | { type: 'skip' }
@@ -35,7 +37,7 @@ type Action =
 
 const initial: State = {
   status: 'idle', traceId: null, events: [], applied: 0, serverDone: false, rawCardShared: null,
-  result: null, error: null, ciphertext: null, runs: 0,
+  result: null, error: null, ciphertext: null, runs: 0, input: null, startedAt: null,
 };
 
 function reducer(s: State, a: Action): State {
@@ -43,7 +45,8 @@ function reducer(s: State, a: Action): State {
     case 'tokenizing':
       return { ...initial, status: 'tokenizing', runs: s.runs };
     case 'start':
-      return { ...initial, status: 'running', traceId: a.traceId, ciphertext: a.ciphertext, runs: s.runs + 1 };
+      return { ...initial, status: 'running', traceId: a.traceId, ciphertext: a.ciphertext, runs: s.runs + 1,
+        input: a.input, startedAt: a.startedAt };
     case 'page': {
       const known = new Set(s.events.map((e) => e.seq));
       const fresh = a.events.filter((e) => !known.has(e.seq));
@@ -138,7 +141,7 @@ export function useInvestigation(config: Config | null) {
     }
     const traceId = newTraceId();
     lastSeq.current = -1;
-    dispatch({ type: 'start', traceId, ciphertext: blob });
+    dispatch({ type: 'start', traceId, ciphertext: blob, input, startedAt: Date.now() });
     try {
       const result = await api.checkout({ ...input, blob, trace_id: traceId });
       dispatch({ type: 'result', result, traceId });

@@ -188,6 +188,17 @@ export function settlementOf(approve: boolean, status: string, reason?: string |
   return { word: 'Void unconfirmed', note: reason ? `Stripe did not confirm the void: ${reason}` : 'Stripe did not confirm the void', tone: 'bad' };
 }
 
+/** What happened to the money so far, as the Stripe panel states it (the export uses the same words). */
+export function paymentStateOf(view: Pick<Investigation, 'payment' | 'phase'>):
+  { word: string; note: string; tone?: 'good' | 'bad' | 'attention' | 'neutral' } {
+  const pay = view.payment;
+  if (pay) return settlementOf(pay.approve, pay.status, pay.reason);
+  if (view.phase === 'review') return { word: 'Held', note: 'Nothing charged yet', tone: 'attention' };
+  // stopped before Stripe was asked to settle
+  if (view.phase === 'done') return { word: 'Not charged', note: 'Nothing was charged', tone: 'neutral' };
+  return { word: '—', note: 'Waiting for a decision' };
+}
+
 /** The review and decline lines, as the gate's own score line states them ("review from 3, decline from 8"). */
 export function gateThresholds(gate: { lines: GateLine[] }): { review: number; decline: number } | null {
   const m = gate.lines.find((l) => l.rule === 'score')?.text.match(/review from (\d+), decline from (\d+)/);

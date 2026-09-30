@@ -3,16 +3,19 @@ import { Check, Hand, KeyRound, TriangleAlert, X } from 'lucide-react';
 import { reviewerToken, setReviewerToken } from '../api/client';
 import { formatMoney } from '../format';
 import type { Investigation } from '../investigation/derive';
+import type { ReportSource } from '../report/report';
+import { ExportReport } from './ExportReport';
 import { EvidenceGroups, Roles, Settlement } from './Inspector';
 
 interface Props {
   view: Investigation;
   demo: boolean; // demo controls: the node's session cookie authenticates the reviewer, so no credential field
   onDecide: (reviewId: string, action: 'approve' | 'decline') => Promise<unknown>;
+  exportSource?: ReportSource | null; // the held decision can be exported before a person decides
 }
 
 /** Automation has stopped. A person reads the evidence and makes the final call. */
-export function HumanReviewPanel({ view, demo, onDecide }: Props) {
+export function HumanReviewPanel({ view, demo, onDecide, exportSource }: Props) {
   const [token, setToken] = useState(reviewerToken());
   const [chosen, setChosen] = useState<'approve' | 'decline' | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -71,6 +74,7 @@ export function HumanReviewPanel({ view, demo, onDecide }: Props) {
         {error && <div className="error-note" role="alert">{error}</div>}
         <p className="review-sheet__final">Final. Either way it becomes a training label that never leaves this node.</p>
       </section>
+      {exportSource && <ExportReport source={exportSource} />}
 
       {view.gate && (
         <section className="roles-panel" aria-label="Who took part in this decision">
