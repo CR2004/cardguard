@@ -2,16 +2,15 @@
 
 ## Before you go on stage
 
-Start these, each in its own terminal, in this order:
+One command starts everything (UI build, SuperLink, SuperNode, bank, merchant; Ctrl+C stops it all):
 
 ```bash
-python scripts/run_superlink.py
-python scripts/run_supernode.py
-python run_demo.py --federation local-agent --stores store-a,store-b,store-c
+make demo-flower        # or: make demo  (same stores, decisions in-process, no Flower processes)
 ```
 
-Open http://127.0.0.1:4242. The top bar should read **Stripe test · Bank connected · Flower local-agent**. With
-REVIEWER_TOKEN in `.env`, the page loads the reviewer credential itself; the review panel shows only its buttons.
+Open http://127.0.0.1:4242. The top bar should read **Stripe test · Bank connected · Flower local-agent**. The page
+never asks for the reviewer credential (a demo-only HttpOnly session cookie; the token never reaches the browser):
+the review panel shows only its buttons.
 Keep a second tab on flower.ai (or `flwr list supergrid`) to show the SuperGrid runs. Type Stripe's test Visa
 4242 4242 4242 4242, any future date, any CVC, into the card fields (the copy button under the fields copies it).
 
@@ -165,4 +164,7 @@ nine-feature federated model learns at once; the four specialists do not learn f
 - **Endeavor shows a template sentence.** Flower's Endeavor provider answers 502 intermittently; one retry, then the template.
   The decision never depends on it.
 - **The ring starts at medium.** The network memory window is 10 minutes: wait, or restart the SuperLink stack.
-- **The review panel asks for a credential.** run_demo was started before REVIEWER_TOKEN was in `.env`: restart it and reload.
+- **"Reviewer authentication unavailable".** The page's reviewer session is stale (run_demo restarted with a freshly minted
+  token): reload the page. A REVIEWER_TOKEN preset in `.env` keeps the session across restarts.
+- **Never put the demo behind a proxy or tunnel that rewrites Host to localhost** (ngrok `--host-header=rewrite`,
+  cloudflared `--http-host-header`): its visitors would count as this machine and get the reviewer session.

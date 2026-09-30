@@ -40,7 +40,16 @@ export function setReviewerToken(token: string): void {
     /* storage blocked: the token is asked again next time */
   }
 }
-const asReviewer = () => ({ Authorization: `Bearer ${reviewerToken()}` });
+// DEMO ONLY: with demo controls on, this page never holds the reviewer credential. The node gave it an HttpOnly
+// session cookie (unreadable here) and accepts it with this header; the presenter is never asked. Production
+// would sign each reviewer in (SSO) and authorize by role (RBAC) instead of one shared demo credential.
+let demoReviewer = false;
+export function enableDemoReviewerSession(): void {
+  demoReviewer = true;
+  setReviewerToken(''); // a credential an older build stored in this browser is dropped
+}
+const asReviewer = (): Record<string, string> =>
+  demoReviewer ? { 'X-CardGuard-Demo-Reviewer': '1' } : { Authorization: `Bearer ${reviewerToken()}` };
 
 export const api = {
   config: () => get<Config>('/config'),

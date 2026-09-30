@@ -1,6 +1,7 @@
 """Regression tests for the code-review findings."""
 
 import numpy as np
+import pytest
 
 from cardguard.decision import llm
 from cardguard.payment_processing import merchant
@@ -110,15 +111,87 @@ def test_conflicting_replies_from_two_nodes_go_to_a_human():
     assert v["decided_by"] == "no_facts" and any("conflicting" in r["reason"] for r in v["rejected"])
 
 
-def test_reviewer_credential_reaches_only_the_local_demo_page(monkeypatch):
-    """Demo convenience: the node gives its own page the reviewer credential, so the presenter is never asked.
-    Only with demo controls on, only to a request from this machine, never to anyone else."""
-    from cardguard.payment_processing import merchant
+def _demo_review_node(monkeypatch):
+    monkeypatch.setattr(merchant, "processor", processor())
     monkeypatch.setattr(merchant, "REVIEWER_TOKEN", "demo-review-credential")
-    c = merchant.app.test_client()
     monkeypatch.setattr(merchant, "DEMO_CONTROLS", True)
-    assert c.get("/config").get_json()["reviewer_token"] == "demo-review-credential"
-    remote = c.get("/config", environ_base={"REMOTE_ADDR": "10.0.0.7"}).get_json()
-    assert "reviewer_token" not in remote
+    merchant.ledger = merchant.MerchantLedger(); merchant.pending.clear(); merchant.seen.clear(); merchant.labels.clear(); merchant._checkout_calls.clear()
+    return merchant.app.test_client()
+
+
+DEMO_H = {merchant.DEMO_REVIEWER_HEADER: "1"}
+
+
+def test_demo_page_gets_a_session_cookie_never_the_reviewer_token(monkeypatch):
+    """Demo only: this node's own page on this machine gets an HttpOnly, SameSite=Strict session, derived from the
+    token but never the token: not in the body, not in the cookie. Nobody else gets one."""
+    c = _demo_review_node(monkeypatch)
+    res = c.get("/config")
+    assert b"demo-review-credential" not in res.data and "reviewer_token" not in res.get_json()
+    assert all("demo-review-credential" not in h for h in res.headers.getlist("Set-Cookie"))
+    cookie = c.get_cookie(merchant.DEMO_REVIEWER_COOKIE)
+    assert cookie.http_only and cookie.same_site == "Strict" and cookie.value != "demo-review-credential"
+    remote = merchant.app.test_client().get("/config", environ_base={"REMOTE_ADDR": "10.0.0.7"})
+    assert not remote.headers.getlist("Set-Cookie")
+    monkeypatch.setattr(merchant, "ALLOWED_HOSTS", merchant.ALLOWED_HOSTS | {"demo.tunnel.example"})
+    tunnel = merchant.app.test_client().get("/config", base_url="http://demo.tunnel.example")  # relayed from 127.0.0.1
+    assert tunnel.status_code == 200 and not tunnel.headers.getlist("Set-Cookie")
     monkeypatch.setattr(merchant, "DEMO_CONTROLS", False)
-    assert "reviewer_token" not in c.get("/config").get_json()
+    assert not merchant.app.test_client().get("/config").headers.getlist("Set-Cookie")
+    monkeypatch.setattr(merchant, "DEMO_CONTROLS", True); monkeypatch.setattr(merchant, "REVIEWER_TOKEN", "")
+    assert not merchant.app.test_client().get("/config").headers.getlist("Set-Cookie")
+
+
+@pytest.mark.parametrize("page", ["http://127.0.0.1:4242", "http://localhost:4242", "http://localhost"])
+def test_demo_session_approves_and_declines_through_the_reviewer_gate(monkeypatch, page):
+    """The page as run_demo.py serves it (127.0.0.1:4242), and the other loopback names the node answers to."""
+    c = _demo_review_node(monkeypatch)
+    assert c.get("/config", base_url=page).headers.getlist("Set-Cookie")
+    approve, decline = (buy(c, card=MASTER_DE, amount=90000)["review_id"] for _ in range(2))
+    res = c.post(f"/reviews/{approve}/approve", headers=DEMO_H, base_url=page)
+    assert res.get_json()["outcome"] == "approved_by_human"
+    assert c.post(f"/reviews/{decline}/decline", headers=DEMO_H, base_url=page).get_json()["outcome"] == "declined_by_human"
+    assert merchant.pending == {}
+
+
+def test_demo_session_fails_safely_and_the_payment_stays_held(monkeypatch):
+    """No bypass: without the session, without the header, from another machine, with demo controls off, or with
+    no reviewer credential configured, the gate refuses and nothing is charged or labelled."""
+    c = _demo_review_node(monkeypatch)
+    rid = buy(c, card=MASTER_DE, amount=90000)["review_id"]
+    assert c.post(f"/reviews/{rid}/approve", headers=DEMO_H).status_code == 401            # no session cookie
+    c.set_cookie(merchant.DEMO_REVIEWER_COOKIE, "forged")
+    assert c.post(f"/reviews/{rid}/approve", headers=DEMO_H).status_code == 401            # a forged session
+    c.get("/config")
+    assert c.post(f"/reviews/{rid}/approve").status_code == 401                            # no header
+    assert c.post(f"/reviews/{rid}/approve", headers=DEMO_H,
+                  environ_base={"REMOTE_ADDR": "10.0.0.7"}).status_code == 401             # another machine
+    monkeypatch.setattr(merchant, "ALLOWED_HOSTS", merchant.ALLOWED_HOSTS | {"demo.tunnel.example"})
+    tunnel = merchant.app.test_client()                                                    # a tunnel, valid session
+    tunnel.set_cookie(merchant.DEMO_REVIEWER_COOKIE, merchant._demo_reviewer_session(), domain="demo.tunnel.example")
+    assert tunnel.post(f"/reviews/{rid}/approve", headers=DEMO_H, base_url="http://demo.tunnel.example").status_code == 401
+    monkeypatch.setattr(merchant, "ALLOWED_HOSTS", merchant.ALLOWED_HOSTS | {"localhost.evil.example"})
+    lookalike = merchant.app.test_client()                                                 # a loopback look-alike name
+    assert not lookalike.get("/config", base_url="http://localhost.evil.example").headers.getlist("Set-Cookie")
+    lookalike.set_cookie(merchant.DEMO_REVIEWER_COOKIE, merchant._demo_reviewer_session(), domain="localhost.evil.example")
+    assert lookalike.post(f"/reviews/{rid}/approve", headers=DEMO_H, base_url="http://localhost.evil.example").status_code == 401
+    for relayed in ({"X-Forwarded-For": "203.0.113.9"}, {"Forwarded": "for=203.0.113.9"}):  # a relay that says so
+        assert not merchant.app.test_client().get("/config", headers=relayed).headers.getlist("Set-Cookie")
+        assert c.post(f"/reviews/{rid}/approve", headers={**DEMO_H, **relayed}).status_code == 401
+    monkeypatch.setattr(merchant, "DEMO_CONTROLS", False)
+    assert c.post(f"/reviews/{rid}/approve", headers=DEMO_H).status_code == 401            # demo controls off
+    monkeypatch.setattr(merchant, "DEMO_CONTROLS", True); monkeypatch.setattr(merchant, "REVIEWER_TOKEN", "")
+    assert c.post(f"/reviews/{rid}/approve", headers=DEMO_H).status_code == 401            # no credential at all
+    assert rid in merchant.pending and merchant.labels == []
+    assert merchant.processor.audit[-1]["event"] == "verify"                               # nothing charged
+
+
+def test_a_wrong_bearer_or_a_rotated_credential_is_refused(monkeypatch):
+    """The session is bound to the configured credential: rotating REVIEWER_TOKEN revokes it."""
+    c = _demo_review_node(monkeypatch)
+    rid = buy(c, card=MASTER_DE, amount=90000)["review_id"]
+    assert c.post(f"/reviews/{rid}/approve", headers={"Authorization": "Bearer wrong-token"}).status_code == 401
+    c.get("/config")                                                                       # minted under the old one
+    monkeypatch.setattr(merchant, "REVIEWER_TOKEN", "rotated-review-credential")
+    assert c.post(f"/reviews/{rid}/approve", headers=DEMO_H).status_code == 401
+    assert rid in merchant.pending

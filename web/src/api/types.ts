@@ -9,7 +9,6 @@ export interface Config {
   bank_attestation: boolean; // a bank attestation node is configured (it never processes payments)
   publishable_key: string | null; // Stripe TEST publishable key; null when the node only has a placeholder
   demo_controls: boolean;
-  reviewer_token?: string; // demo controls only, and only to this node's own page on this machine
   wire_vocabulary: Record<string, string[]>;
   amount_cuts: { medium_from: number; high_from: number; basis: string };
 }

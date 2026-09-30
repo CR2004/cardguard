@@ -213,9 +213,41 @@ def reviewer_only():
     """Money-moving and model-changing human actions need the reviewer credential. With no token
     configured the node refuses them all: there is no unauthenticated way to approve a payment."""
     token = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
-    if not REVIEWER_TOKEN or not hmac.compare_digest(token, REVIEWER_TOKEN):
+    if (not REVIEWER_TOKEN or not hmac.compare_digest(token, REVIEWER_TOKEN)) and not _demo_reviewer_ok():
         return jsonify({"error": "reviewer token required"}), 401
     return None
+
+
+# DEMO ONLY. The presenter is never asked for the reviewer credential: /config gives this node's own page, on
+# this machine, an HttpOnly session cookie derived from REVIEWER_TOKEN (never the token itself, so no script,
+# URL or DOM can hold it), and reviewer_only() accepts that session only with demo controls on, only from this
+# machine, and only with a header another origin cannot send without a CORS preflight this node never answers.
+# "This machine" means any client that reaches the node over loopback under a loopback host name: that includes
+# other local processes, and a proxy or tunnel that rewrites Host to localhost, so never expose a demo-controls
+# node through one. Production would authenticate each reviewer (SSO) and authorize by role (RBAC), not share
+# one demo credential.
+DEMO_REVIEWER_COOKIE = "cardguard_demo_reviewer"
+DEMO_REVIEWER_HEADER = "X-CardGuard-Demo-Reviewer"
+LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "[::1]"}
+
+
+def _demo_reviewer_session() -> str:
+    """The demo session value: empty with no reviewer credential configured, so there is nothing to accept."""
+    return hmac.new(REVIEWER_TOKEN.encode(), b"cardguard demo reviewer session", "sha256").hexdigest() if REVIEWER_TOKEN else ""
+
+
+def _demo_reviewer_here() -> bool:
+    """Demo controls on, and a loopback peer that asked for a loopback name. A tunnel on this laptop relays remote
+    visitors from 127.0.0.1: one that keeps its own host name is refused here, and a relay that says so in a
+    forwarding header is refused too. A proxy that rewrites Host and adds no such header cannot be told apart."""
+    return (DEMO_CONTROLS and local_only() and request.host.rsplit(":", 1)[0] in LOOPBACK_HOSTS
+            and "X-Forwarded-For" not in request.headers and "Forwarded" not in request.headers)
+
+
+def _demo_reviewer_ok() -> bool:
+    session = _demo_reviewer_session()
+    return (bool(session) and _demo_reviewer_here() and request.headers.get(DEMO_REVIEWER_HEADER) == "1"
+            and hmac.compare_digest(request.cookies.get(DEMO_REVIEWER_COOKIE, "").encode(), session.encode()))
 
 
 def _rate_limited(addr: str) -> bool:
@@ -470,16 +502,16 @@ def assets(name):
 @app.get("/config")
 def config():
     (p10, p50, p90), basis = baseline.cuts()
-    return jsonify({"merchant_id": MERCHANT_ID, "vertical": VERTICAL,
+    resp = jsonify({"merchant_id": MERCHANT_ID, "vertical": VERTICAL,
                     "federation": FEDERATION or None, "stores": STORES, "bank_attestation": bank is not None,
                     "publishable_key": browser_publishable_key(processor.publishable_key),  # None: placeholder key
                     "demo_controls": DEMO_CONTROLS,
                     "wire_vocabulary": {k: sorted(v) for k, v in WIRE_SCHEMA.items() if v},  # the closed vocabulary
-                    "amount_cuts": {"medium_from": p50, "high_from": p90, "basis": basis},
-                    # Demo only: this node's own page, loaded on this machine, gets the reviewer credential so the
-                    # presenter is never asked for it. Never with demo controls off, never to another machine; other
-                    # sites cannot read this response (no CORS) and a rebound host is refused above.
-                    **({"reviewer_token": REVIEWER_TOKEN} if DEMO_CONTROLS and REVIEWER_TOKEN and local_only() else {})})
+                    "amount_cuts": {"medium_from": p50, "high_from": p90, "basis": basis}})
+    session = _demo_reviewer_session()
+    if session and _demo_reviewer_here():  # demo only: see DEMO_REVIEWER_COOKIE
+        resp.set_cookie(DEMO_REVIEWER_COOKIE, session, httponly=True, samesite="Strict", path="/")
+    return resp
 
 
 @app.post("/checkout")
