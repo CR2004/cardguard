@@ -15,6 +15,22 @@ REVIEWER_TOKEN in `.env`, the page loads the reviewer credential itself; the rev
 Keep a second tab on flower.ai (or `flwr list supergrid`) to show the SuperGrid runs. Type Stripe's test Visa
 4242 4242 4242 4242, any future date, any CVC, into the card fields (the copy button under the fields copies it).
 
+### Which card for which scenario
+Every purchase leaves history on the node, so the same card at the same store again looks riskier (the model bands go
+medium and Jev's approval drops below the 80% confidence gate, so a person decides). Plan the cards:
+
+| Scenario | Card (any future date, any CVC) | Expect |
+|---|---|---|
+| Normal purchase | 4242 4242 4242 4242 | approved |
+| Collaborative investigation | 4242 4242 4242 4242 again (the repeat is the story) | round 2, held for a person |
+| Obvious fraud | 4000 0000 0000 0101 | hard decline |
+| Rogue node, Prompt injection | 5555 5555 5555 4444 | stopped / contained |
+| Card-testing ring | 4000 0566 5566 5556 (unused so far) | low, medium, high; third store held |
+| Human review | the ring's held payment | decline; label count +1 |
+
+After a rehearsal, reset (stop the stack, move `.demo/labels.jsonl`, `.demo/review_audit.jsonl` and
+`.demo/series_local-agent.txt` aside, start again) or use fresh test cards such as 2223 0031 2200 3222.
+
 ## The one sentence (10 s)
 
 "Several parties' agents decide one card payment together on Flower, and card data never enters any model's context.
