@@ -22,7 +22,7 @@ dependencies = [
 packages = ["cardguard"]
 
 [tool.flwr.app]
-publisher = "cardguard"
+publisher = "ac007"
 display-name = "CardGuard"
 fab-format-version = 1
 flwr-version-target = "1.39.0"
