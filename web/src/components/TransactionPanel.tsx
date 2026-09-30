@@ -1,8 +1,8 @@
-import type { RefObject } from 'react';
+import { useState, type RefObject } from 'react';
 import { Bug, ChevronDown, CircleCheck, Loader2, Lock, MessageSquareWarning, Network, ShieldX, Split } from 'lucide-react';
 import type { Config } from '../api/types';
 import { PaymentCard } from '../card/PaymentCard';
-import { StripeCard, type StripeCardHandle } from '../card/StripeCard';
+import { EMPTY_CARD_UI, keyProblem, StripeCard, type CardUi, type StripeCardHandle } from '../card/StripeCard';
 import { formatMoney } from '../format';
 import { ATTACKS, COUNTRIES, SCENARIOS, type RingStep, type Scenario } from '../investigation/scenarios';
 
@@ -41,8 +41,11 @@ interface Props {
 
 export function TransactionPanel({ config, scenario, inputs, onScenario, onInputs, onRun, busy, after, tokenizing, received, error,
   ring, stripeCard }: Props) {
+  const [cardUi, setCardUi] = useState<CardUi>(EMPTY_CARD_UI);
   const country = COUNTRIES.find((c) => c.code === inputs.buyerCountry)?.name ?? inputs.buyerCountry;
   const chosen = SCENARIOS.find((s) => s.id === scenario);
+  const attack = ATTACKS.find((a) => a.id === inputs.attack);
+  const noStripe = keyProblem(config.publishable_key) !== null;
   return (
     <aside className="checkout" aria-label="Checkout">
       <header className="checkout__head">
@@ -66,14 +69,15 @@ export function TransactionPanel({ config, scenario, inputs, onScenario, onInput
         {chosen ? chosen.story : 'Pick a scenario. Each one is a real checkout.'}
       </p>
 
-      <PaymentCard amountCents={inputs.amountCents} country={country} tokenizing={tokenizing} paymentMethod={received} />
-
-      <StripeCard ref={stripeCard} publishableKey={config.publishable_key} hint={(chosen ?? SCENARIOS[0])?.testCard} />
+      <section className="pay-card" aria-label="Pay with a card">
+        <PaymentCard country={country} tokenizing={tokenizing} paymentMethod={received} ui={cardUi} />
+        <StripeCard ref={stripeCard} publishableKey={config.publishable_key} hint={(chosen ?? SCENARIOS[0])?.testCard} onUi={setCardUi} />
+      </section>
 
       <div className="pay-area">
-        <button type="button" className={`pay-btn${after && !busy ? ' pay-btn--again' : ''}`} onClick={onRun} disabled={busy}>
+        <button type="button" className={`pay-btn${after && !busy ? ' pay-btn--again' : ''}`} onClick={onRun} disabled={busy || noStripe}>
           {busy ? <Loader2 size={17} className="spin" aria-hidden /> : <Lock size={16} strokeWidth={2.4} aria-hidden />}
-          {tokenizing ? 'Tokenizing with Stripe…' : busy ? 'Investigating…' : `Pay ${formatMoney(inputs.amountCents)}`}
+          <span>{tokenizing ? 'Tokenizing with Stripe…' : busy ? 'Investigating…' : <>Pay <b>{formatMoney(inputs.amountCents)}</b></>}</span>
         </button>
         {error && <div className="error-note" role="alert">{error}</div>}
         {ring && (
@@ -90,7 +94,7 @@ export function TransactionPanel({ config, scenario, inputs, onScenario, onInput
             })}
           </ol>
         )}
-        <p className="pay-note">The store receives a token, never the card.</p>
+        <p className="pay-note">The store receives a payment-method token, never the card · Stripe TEST mode</p>
       </div>
 
       <details className="adjust" open={Boolean(inputs.attack || inputs.modelAgent)}>
@@ -102,7 +106,7 @@ export function TransactionPanel({ config, scenario, inputs, onScenario, onInput
         {!config.demo_controls && (
           <p className="adjust__note">Demo controls are off on this node, so attack and model-agent choices are ignored server-side.</p>
         )}
-        <div className="field-row">
+        <div className="field-grid">
           <div className="field">
             <label htmlFor="amount">Amount (USD)</label>
             <input id="amount" type="number" min={1} step="1" value={inputs.amountCents / 100}
@@ -114,25 +118,27 @@ export function TransactionPanel({ config, scenario, inputs, onScenario, onInput
               {COUNTRIES.map((c) => <option key={c.code} value={c.code}>{c.name}</option>)}
             </select>
           </div>
+          {config.stores.length > 1 && (
+            <div className="field">
+              <label htmlFor="store">Store on this node</label>
+              <select id="store" value={inputs.store} onChange={(e) => onInputs({ store: e.target.value })}>
+                {config.stores.map((s) => <option key={s} value={s}>{s}</option>)}
+              </select>
+            </div>
+          )}
+          <div className="field">
+            <label htmlFor="attack">Store agent</label>
+            <select id="attack" value={inputs.attack} aria-describedby="attack-detail"
+              onChange={(e) => onInputs({ attack: e.target.value as Scenario['attack'] })}>
+              {ATTACKS.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+            </select>
+          </div>
         </div>
+        <p className="adjust__note" id="attack-detail">Store agent: {attack?.detail ?? 'No attack'}.</p>
         <p className="adjust__note">
           Amount bands at this store (vertical {config.vertical}): medium from {formatMoney(config.amount_cuts.medium_from * 100)},
           high from {formatMoney(config.amount_cuts.high_from * 100)}.
         </p>
-        {config.stores.length > 1 && (
-          <div className="field">
-            <label htmlFor="store">Store (one node, several stores)</label>
-            <select id="store" value={inputs.store} onChange={(e) => onInputs({ store: e.target.value })}>
-              {config.stores.map((s) => <option key={s} value={s}>{s}</option>)}
-            </select>
-          </div>
-        )}
-        <div className="field">
-          <label htmlFor="attack">Store agent</label>
-          <select id="attack" value={inputs.attack} onChange={(e) => onInputs({ attack: e.target.value as Scenario['attack'] })}>
-            {ATTACKS.map((a) => <option key={a.id} value={a.id}>{a.name}: {a.detail}</option>)}
-          </select>
-        </div>
         <label className="check">
           <input type="checkbox" checked={inputs.modelAgent} onChange={(e) => onInputs({ modelAgent: e.target.checked })} />
           <span>Model-driven store agent: an LLM drafts the disclosure with the gift message in its prompt. Its draft is checked, never sent.</span>

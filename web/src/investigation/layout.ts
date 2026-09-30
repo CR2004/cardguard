@@ -1,15 +1,15 @@
 // Stage geometry (design units; the stage is scaled to fit). Left to right is cause to effect.
 import type { EdgeId, NodeId } from './derive';
 
-export const STAGE = { width: 930, height: 700 };
+export const STAGE = { width: 930, height: 770 };
 
 export type Point = readonly [number, number];
 export type RegionId = 'bank' | 'merchant' | 'coordinator';
 
 export const REGIONS: Record<RegionId, { x: number; y: number; w: number; h: number }> = {
   bank: { x: 124, y: 10, w: 244, h: 280 },
-  merchant: { x: 124, y: 330, w: 244, h: 360 },
-  coordinator: { x: 486, y: 10, w: 236, h: 680 },
+  merchant: { x: 124, y: 330, w: 244, h: 430 },
+  coordinator: { x: 486, y: 10, w: 236, h: 750 },
 };
 
 export const REGION_OF: Partial<Record<NodeId, RegionId>> = {

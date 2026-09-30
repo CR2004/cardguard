@@ -3,7 +3,7 @@ import { Check, Hand, KeyRound, TriangleAlert, X } from 'lucide-react';
 import { reviewerToken, setReviewerToken } from '../api/client';
 import { formatMoney } from '../format';
 import type { Investigation } from '../investigation/derive';
-import { EvidenceGroups, Settlement } from './Inspector';
+import { EvidenceGroups, Roles, Settlement } from './Inspector';
 
 interface Props {
   view: Investigation;
@@ -68,6 +68,13 @@ export function HumanReviewPanel({ view, onDecide }: Props) {
         {error && <div className="error-note" role="alert">{error}</div>}
         <p className="review-sheet__final">Final. Either way it becomes a training label that never leaves this node.</p>
       </section>
+
+      {view.gate && (
+        <section className="roles-panel" aria-label="Who took part in this decision">
+          <h3 className="rail-title">Who took part</h3>
+          <Roles gate={view.gate} review={view.review} />
+        </section>
+      )}
 
       <Settlement view={view} />
 

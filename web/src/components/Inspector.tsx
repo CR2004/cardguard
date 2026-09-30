@@ -1,6 +1,6 @@
-import { Bot, ChevronDown, CreditCard, Landmark, Network, ShieldCheck, Store, X } from 'lucide-react';
+import { Bot, ChevronDown, CreditCard, Flower2, Landmark, Network, Scale, ShieldCheck, Sparkles, Store, UserRound, X } from 'lucide-react';
 import { formatBytes, riskPoints } from '../format';
-import { plainReason, settlementOf, type Investigation, type Party } from '../investigation/derive';
+import { explainerOf, plainReason, settlementOf, type GateView, type Investigation, type Party } from '../investigation/derive';
 import { EvidenceChip } from './EvidenceChip';
 import { IdChip } from './IdChip';
 import { GateRules, RiskMeter, stoppedText, VERDICT_WORD, type GateReveal } from './PolicyGate';
@@ -31,6 +31,63 @@ function verdictOf(view: Investigation, decided: boolean): { key: VerdictKey; wo
   if (view.gate) return { key: 'pending', word: 'Evaluating', by: 'The policy gate is checking its rules.' };
   if (view.phase !== 'idle') return { key: 'pending', word: 'Investigating', by: 'Only the policy gate can produce a verdict.' };
   return { key: 'pending', word: 'No decision yet', by: 'Pick a scenario and pay to start a real checkout.' };
+}
+
+const ADVICE: Record<string, string> = { approve: 'Approve', step_up: 'Step up', decline: 'Decline' };
+
+/** Who took part in the decision, from the gate event only: a model is named only when it actually answered,
+ *  and the policy gate (or the person it handed to) is always the one that decided. */
+export function Roles({ gate, review }: { gate: GateView; review?: { decided?: string } | null }) {
+  const jev = gate.jev;
+  const ex = explainerOf(gate);
+  const raised = Boolean(jev && 'action' in jev && jev.raised);
+  const TEMPLATE_WHY = { unavailable: 'Endeavor unavailable', rejected: 'Endeavor’s answer was rejected', not_asked: 'Endeavor not asked: no verified facts' };
+  return (
+    <ul className="roles" aria-label="Who took part in this decision">
+      {jev && 'action' in jev && (
+        <li data-kind="advisor">
+          <span className="roles__who"><Sparkles size={13} aria-hidden /> Jev</span>
+          <span className="roles__what">Risk advisory: <b>{ADVICE[jev.action] ?? jev.action}</b> · {Math.round(jev.confidence * 100)}%</span>
+          <em>{raised ? 'Added caution' : 'Advisory only'}</em>
+        </li>
+      )}
+      {jev && 'unavailable' in jev && (
+        <li data-kind="off">
+          <span className="roles__who"><Sparkles size={13} aria-hidden /> Jev</span>
+          <span className="roles__what">Unavailable: rules decided alone</span>
+          <em>Not used</em>
+        </li>
+      )}
+      {ex && ex.kind !== 'template' && (
+        <li data-kind={ex.kind === 'endeavor' ? 'flower' : 'advisor'}>
+          <span className="roles__who" title={ex.model}>
+            {ex.kind === 'endeavor' ? <><Flower2 size={13} aria-hidden /> Flower Endeavor</> : <><Bot size={13} aria-hidden /> {ex.model}</>}
+          </span>
+          <span className="roles__what">Wrote the explanation</span>
+          <em>Explanation only</em>
+        </li>
+      )}
+      {ex?.kind === 'template' && (
+        <li data-kind="off">
+          <span className="roles__who"><Bot size={13} aria-hidden /> Template fallback</span>
+          <span className="roles__what">{TEMPLATE_WHY[ex.reason]}</span>
+          <em>Explanation</em>
+        </li>
+      )}
+      <li data-kind="authority">
+        <span className="roles__who"><Scale size={13} aria-hidden /> Policy Gate</span>
+        <span className="roles__what">{review ? 'Held it for a person' : raised ? 'Fixed rules, then the more cautious vote' : 'Fixed rules decided'}</span>
+        <em>Final authority</em>
+      </li>
+      {review && (
+        <li data-kind="authority">
+          <span className="roles__who"><UserRound size={13} aria-hidden /> Reviewer</span>
+          <span className="roles__what">{review.decided ? 'Made the final call' : 'Deciding now'}</span>
+          <em>Human</em>
+        </li>
+      )}
+    </ul>
+  );
 }
 
 /** Stripe's side, kept apart from CardGuard's decision: what happened to the money. */
@@ -104,11 +161,10 @@ export function Inspector({ view, reveal, gateKey, reduced }: Props) {
         {view.gate?.explanation?.text && reveal.decided && (
           <figure className="advisory">
             <blockquote>{view.gate.explanation.text}</blockquote>
-            <figcaption><Bot size={12} aria-hidden />
-              {view.gate.explanation.by === 'template' ? 'Template explanation' : `Explained by ${view.gate.explanation.by}`}, after the verdict. It cannot change it.
-            </figcaption>
+            <figcaption><Bot size={12} aria-hidden /> Written after the verdict. It cannot change it.</figcaption>
           </figure>
         )}
+        {view.gate && reveal.decided && <Roles gate={view.gate} review={view.review} />}
       </section>
 
       <Settlement view={view} />

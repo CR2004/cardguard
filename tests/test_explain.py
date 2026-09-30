@@ -82,3 +82,19 @@ def test_model_5xx_is_retried_once_then_template():
             raise err
     bad = Bad(9)
     assert llm.ask("i", "x", "t", client=bad)["by"] == "template" and bad.calls == 1  # a 4xx is not retried
+
+
+def test_says_which_endpoint_answered(monkeypatch):
+    """The page names Flower Endeavor only when Flower's endpoint answered, never from the model id alone."""
+    from cardguard.decision import llm
+    for var in ("LLM_BASE_URL", "LLM_API_KEY", "FLWR_RUNTIME_BASE_URL", "FLWR_RUNTIME_API_KEY", "ENDEAVOR_BASE_URL", "ENDEAVOR_API_KEY"):
+        monkeypatch.delenv(var, raising=False)
+    fake = FakeEndeavor("Approved: nothing unusual about this purchase.")
+    monkeypatch.setenv("ENDEAVOR_BASE_URL", "https://api.flower.ai/v1")
+    monkeypatch.setenv("ENDEAVOR_API_KEY", "k")
+    assert llm.ask("i", "x", fallback="t", client=fake)["via"] == "flower"
+    monkeypatch.setenv("LLM_BASE_URL", "http://127.0.0.1:8000/v1")  # a local server that accepts any model name
+    monkeypatch.setenv("LLM_API_KEY", "k")
+    out = llm.ask("i", "x", fallback="t", client=fake)
+    assert out["via"] == "custom" and out["by"] == llm.model_name()
+

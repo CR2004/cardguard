@@ -64,7 +64,7 @@ CHECKOUT_RATE_PER_MINUTE = int(os.environ.get("CHECKOUT_RATE_PER_MINUTE", "30"))
 
 
 # The processor: Stripe in TEST mode (live keys are refused). Tests inject one with a faked SDK.
-from cardguard.payment_processing.stripe_processor import StripeProcessor  # noqa: E402
+from cardguard.payment_processing.stripe_processor import StripeProcessor, browser_publishable_key  # noqa: E402
 
 processor = StripeProcessor(os.environ.get("STRIPE_SECRET_KEY", ""), os.environ.get("STRIPE_PUBLISHABLE_KEY", ""))
 # The bank attestation node (BANK_URL, signed with BANK_SECRET). Unset = no bank: its facts are "unknown".
@@ -472,7 +472,8 @@ def config():
     (p10, p50, p90), basis = baseline.cuts()
     return jsonify({"merchant_id": MERCHANT_ID, "vertical": VERTICAL,
                     "federation": FEDERATION or None, "stores": STORES, "bank_attestation": bank is not None,
-                    "publishable_key": processor.publishable_key, "demo_controls": DEMO_CONTROLS,
+                    "publishable_key": browser_publishable_key(processor.publishable_key),  # None: placeholder key
+                    "demo_controls": DEMO_CONTROLS,
                     "wire_vocabulary": {k: sorted(v) for k, v in WIRE_SCHEMA.items() if v},  # the closed vocabulary
                     "amount_cuts": {"medium_from": p50, "high_from": p90, "basis": basis},
                     # Demo only: this node's own page, loaded on this machine, gets the reviewer credential so the

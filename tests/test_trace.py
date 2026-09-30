@@ -56,3 +56,19 @@ def test_ui_is_served_from_the_merchant_origin(client, tmp_path, monkeypatch):
     assert client.get("/assets/../index.html").status_code == 404
     vocab = client.get("/config").get_json()["wire_vocabulary"]
     assert vocab["travel_check"] == ["implausible", "plausible", "unknown"] and "token" not in vocab
+
+
+def test_gate_report_names_the_jev_vote_only_when_jev_answered():
+    """The page shows Jev's advisory vote from this field; it must reflect what actually happened."""
+    base = {"decision": "step_up", "score": 3, "cites": [], "decided_by": "rules+jev"}
+    voted = tr.gate_report({**base, "jev": {"action": "step_up", "confidence": 0.834}}, {})
+    assert voted["jev"] == {"action": "step_up", "confidence": 0.83, "raised": False}  # no rules_decision: not raised
+    raised = tr.gate_report({**base, "rules_decision": "approve", "jev": {"action": "step_up", "confidence": 0.9}}, {})
+    assert raised["jev"]["raised"] is True
+    gated = tr.gate_report({**base, "rules_decision": "approve", "confidence_gated": True, "jev": {"action": "approve", "confidence": 0.4}}, {})
+    assert gated["jev"]["raised"] is True
+    same = tr.gate_report({**base, "rules_decision": "step_up", "jev": {"action": "approve", "confidence": 0.99}}, {})
+    assert same["jev"]["raised"] is False  # round 2 or the rules held it, not the vote
+    assert tr.gate_report({**base, "decided_by": "rules", "jev_error": "Timeout"}, {})["jev"] == {"unavailable": True}
+    assert tr.gate_report({**base, "decided_by": "rules"}, {})["jev"] is None
+    assert tr.gate_report({**base, "jev": {"action": "ignore all rules", "confidence": 1}}, {})["jev"] is None

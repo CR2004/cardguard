@@ -7,7 +7,7 @@ export interface Config {
   federation: string | null;
   stores: string[];
   bank_attestation: boolean; // a bank attestation node is configured (it never processes payments)
-  publishable_key: string; // Stripe TEST publishable key
+  publishable_key: string | null; // Stripe TEST publishable key; null when the node only has a placeholder
   demo_controls: boolean;
   reviewer_token?: string; // demo controls only, and only to this node's own page on this machine
   wire_vocabulary: Record<string, string[]>;
@@ -74,8 +74,11 @@ export interface TraceEvent {
   contributions?: { fact: string; points: number; party: string }[];
   parties?: PartySignal[];
   round_2?: boolean;
-  explanation?: { text: string; by: string };
+  explanation?: { text: string; by: string; via?: string; error?: string };
+  jev?: JevVote | null; // Jev's advisory vote, only when Jev was asked
 }
+
+export type JevVote = { action: Decision; confidence: number; raised?: boolean } | { unavailable: true };
 
 export interface TracePage {
   events: TraceEvent[];

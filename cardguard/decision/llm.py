@@ -26,6 +26,14 @@ def endpoint() -> tuple[str, str] | None:
     return None
 
 
+def via() -> str:
+    """'flower' when the configured endpoint is Flower's (the AgentApp runtime or ENDEAVOR_*), else 'custom'."""
+    for base_var, key_var in PAIRS:
+        if os.environ.get(base_var) and os.environ.get(key_var):
+            return "custom" if base_var == "LLM_BASE_URL" else "flower"
+    return "custom"
+
+
 def client(timeout: float = 8.0):
     pair = endpoint()
     if pair is None:
@@ -60,4 +68,4 @@ def ask(instructions: str, input_text: str, fallback: str, client=None, timeout:
                 return {"text": fallback, "by": "template", "error": error}
     if not text or find_leaks(text, cvv_words=False):
         return {"text": fallback, "by": "template", "error": "rejected_output"}
-    return {"text": text, "by": model_name()}
+    return {"text": text, "by": model_name(), "via": via()}

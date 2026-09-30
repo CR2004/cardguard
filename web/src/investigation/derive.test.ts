@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { TraceEvent } from '../api/types';
-import { derive, dwell, gateThresholds, plainReason, settlementOf, sitsOut } from './derive';
+import { derive, dwell, explainerOf, gateThresholds, plainReason, settlementOf, sitsOut } from './derive';
 import flower from './fixtures/flower-collaborative.json';
 
 // A real trace recorded from the local Flower deployment (SuperLink + one SuperNode).
@@ -131,5 +131,28 @@ describe('derive: the picture is a function of real events only', () => {
     expect(settlementOf(false, 'voided').word).toBe('Voided');
     expect(settlementOf(false, 'processor_error', 'ProcessorReject').word).toBe('Void unconfirmed');
     expect(settlementOf(true, 'succeeded').word).toBe('Charged');
+  });
+});
+
+describe('explainerOf: Endeavor is shown only when it actually answered', () => {
+  it('names Flower Endeavor, another model, the template fallback, or nobody', () => {
+    const endeavor = 'flwrlabs/endeavor-1.0';
+    expect(explainerOf({ explanation: { text: 'Approved: low risk.', by: endeavor, via: 'flower' } })).toEqual({ kind: 'endeavor', model: endeavor });
+    // the Endeavor id answered by another endpoint (e.g. a local server that accepts any model name) is not Endeavor
+    expect(explainerOf({ explanation: { text: 'Approved.', by: endeavor, via: 'custom' } })).toEqual({ kind: 'model', model: endeavor });
+    expect(explainerOf({ explanation: { text: 'Approved.', by: endeavor } })).toEqual({ kind: 'model', model: endeavor });
+    expect(explainerOf({ explanation: { text: 'Approved.', by: 'gpt-4o-mini', via: 'custom' } })).toEqual({ kind: 'model', model: 'gpt-4o-mini' });
+    expect(explainerOf({ explanation: { text: 'Approved because of no risk signals.', by: 'template' } })).toEqual({ kind: 'template', reason: 'unavailable' });
+    expect(explainerOf({ explanation: { text: 'Approved.', by: 'template', error: 'rejected_output' } })).toEqual({ kind: 'template', reason: 'rejected' });
+    expect(explainerOf({ explanation: { text: 'Sent to a human.', by: 'template', error: 'not_asked' } })).toEqual({ kind: 'template', reason: 'not_asked' });
+    expect(explainerOf({ explanation: { text: '', by: 'flwrlabs/endeavor-1.0' } })).toBeNull();
+    expect(explainerOf({})).toBeNull();
+  });
+
+  it('the gate keeps Jev\'s vote exactly as the trace reported it', () => {
+    const gate = (jev: TraceEvent['jev']) => derive([{ seq: 1, t: 1, kind: 'gate.decision', decision: 'step_up', decided_by: 'rules+jev', jev }], 'in-process').gate?.jev;
+    expect(gate({ action: 'step_up', confidence: 0.83 })).toEqual({ action: 'step_up', confidence: 0.83 });
+    expect(gate({ unavailable: true })).toEqual({ unavailable: true });
+    expect(gate(undefined)).toBeNull();
   });
 });

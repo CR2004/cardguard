@@ -21,6 +21,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 from cardguard import dotenv as _dotenv  # noqa: E402
+from cardguard.payment_processing.stripe_processor import browser_publishable_key  # noqa: E402
 
 BANK_URL = "http://127.0.0.1:4243"
 MIN_REVIEWER_TOKEN = 8
@@ -46,6 +47,12 @@ def main() -> int:
     if not os.environ.get("STRIPE_SECRET_KEY", "").startswith("sk_test_") or \
             not os.environ.get("STRIPE_PUBLISHABLE_KEY", "").startswith("pk_test_"):
         print("Stripe TEST keys required: STRIPE_SECRET_KEY=sk_test_... STRIPE_PUBLISHABLE_KEY=pk_test_... (put them in .env)",
+              file=sys.stderr)
+        return 2
+    if browser_publishable_key(os.environ["STRIPE_PUBLISHABLE_KEY"]) is None:  # never printed: only its shape is wrong
+        print("STRIPE_PUBLISHABLE_KEY looks like a placeholder (e.g. pk_test_x), not a real Stripe TEST publishable key: "
+              "Stripe.js would refuse it. Copy the pk_test_... key from the Stripe dashboard (Developers -> API keys). "
+              "A variable exported in the shell wins over .env: unset it there if .env holds the right key.",
               file=sys.stderr)
         return 2
     if not os.path.exists(os.path.join(HERE, "web", "dist", "index.html")):

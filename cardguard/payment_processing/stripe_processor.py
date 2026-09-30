@@ -7,10 +7,21 @@ verification (nothing was charged yet). Test keys only: sk_live_ / pk_live_ are 
 """
 from __future__ import annotations
 
+import re
 import secrets
 import time
 
 from cardguard.payment_processing.processor_base import ProcessorBase
+
+# A real Stripe TEST publishable key is "pk_test_" and a long alphanumeric body. Placeholders such as the
+# test suite's "pk_test_x" pass the prefix check but make Stripe.js fail with "Invalid API Key provided".
+_BROWSER_KEY = re.compile(r"pk_test_[A-Za-z0-9]{24,}")
+
+
+def browser_publishable_key(key: str) -> str | None:
+    """The key the page may hand to Stripe.js, or None when it is a placeholder (or anything but a TEST
+    publishable key). Only this ever reaches the browser; the secret key never does."""
+    return key if _BROWSER_KEY.fullmatch(key or "") else None
 
 
 class StripeProcessor(ProcessorBase):

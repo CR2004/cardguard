@@ -67,3 +67,19 @@ def test_merchant_flow_on_stripe(monkeypatch):
     assert "pm_abc" not in str(led) and led["card_numbers_seen_by_coordinator"] == 0
     leak = c.post("/checkout", json={"blob": "pm_abc", "amount_cents": 2000, "buyer_country": "US", "hour": 14, "attack": "leak"}).get_json()
     assert leak["outcome"] == "blocked" and len(leak["blocked"]) == 3
+
+
+def test_only_a_real_publishable_test_key_reaches_the_browser(monkeypatch):
+    """/config hands Stripe.js the publishable key only when it has a real key's shape; a placeholder
+    (the cause of "Invalid API Key provided: pk_test_x") is withheld, and the secret key is never served."""
+    from cardguard.payment_processing.stripe_processor import browser_publishable_key
+    real_shape = "pk_test_" + "51AbCdEfGhIjKlMnOpQrStUvWx" * 3
+    assert browser_publishable_key(real_shape) == real_shape
+    for bad in ("pk_test_x", "pk_test_offline", "pk_live_" + "A" * 40, "sk_test_" + "A" * 40, "", "pk_test_" + "A" * 30 + "!"):
+        assert browser_publishable_key(bad) is None
+    client = merchant.app.test_client()
+    for key, served in (("pk_test_x", None), (real_shape, real_shape)):
+        monkeypatch.setattr(merchant, "processor", StripeProcessor("sk_test_secretvalue", key, sdk=fake_sdk()))
+        body = client.get("/config").get_data(as_text=True)
+        assert client.get("/config").get_json()["publishable_key"] == served
+        assert "sk_test_" not in body
